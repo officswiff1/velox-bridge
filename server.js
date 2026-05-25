@@ -1979,15 +1979,21 @@ async function checkAccountPlan(acc) {
         });
         if (r2.status === 200) {
           const w = await r2.json();
-          const planCreds  = w.creditsAvailable || 0;
-          const addonCreds = w.creditsAddonsAvailable || 0;
-          acc.credits      = w.totalCreditsAvailable != null ? w.totalCreditsAvailable : planCreds + addonCreds;
-          acc.creditsTotal = w.totalCreditsOfPlan || 0;
-          acc.creditsUsed  = w.creditsSpend || 0;
-          acc.creditsAddons = addonCreds;
-          acc.autoRefill   = w.autoRefill || false;
-          acc.isTeam       = w.profile?.isTeams || false;
-          acc.isTrial      = w.profile?.isTrial || false;
+          acc.isTeam  = w.profile?.isTeams || false;
+          acc.isTrial = w.profile?.isTrial || false;
+          if (acc.isTeam) {
+            // Business/Teams wallet returns org-wide credits, not per-user quota —
+            // showing them would be misleading (user's actual spendable amount is lower).
+            acc.credits = null; acc.creditsTotal = null; acc.creditsUsed = null;
+          } else {
+            const planCreds  = w.creditsAvailable || 0;
+            const addonCreds = w.creditsAddonsAvailable || 0;
+            acc.credits      = w.totalCreditsAvailable != null ? w.totalCreditsAvailable : planCreds + addonCreds;
+            acc.creditsTotal = w.totalCreditsOfPlan || 0;
+            acc.creditsUsed  = w.creditsSpend || 0;
+            acc.creditsAddons = addonCreds;
+            acc.autoRefill   = w.autoRefill || false;
+          }
         }
       } catch (e) {
         addLog('WARN', `[${acc.name}] Wallet check failed: ${e.message}`);
@@ -1995,7 +2001,7 @@ async function checkAccountPlan(acc) {
     }
 
     acc.planCheckedAt = Date.now();
-    addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
+    addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan}${acc.isTeam ? ' (Team)' : ''} | Credits: ${acc.credits != null ? `${acc.credits}/${acc.creditsTotal ?? '?'}` : 'N/A (Business/Team)'} | Expiry: ${acc.planExpiry || 'N/A'}`);
 
     // Auto-deactivate free accounts — they can't generate anything useful
     if (acc.planStatus === 'free') {
