@@ -1168,7 +1168,9 @@ async function generateVideo(acc, {
     }
 
     if (item.status === 'failed') {
-      throw new Error(`Video generation failed: ${item.metadata?.error || 'unknown error'}`);
+      const errDetail = item.metadata?.error || item.metadata?.message || item.error || item.message;
+      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} detail=${JSON.stringify(item.metadata || item.error || 'none')}`);
+      throw new Error(`Video generation failed: ${errDetail || 'unknown error (model may be unavailable or account lacks access)'}`);
     }
   }
 
@@ -1310,7 +1312,9 @@ async function generateAudio(acc, {
     }
 
     if (item.status === 'failed') {
-      throw new Error(`Audio generation failed: ${item.metadata?.error || 'unknown error'}`);
+      const errDetail = item.metadata?.error || item.metadata?.message || item.error || item.message;
+      addLog('WARN', `[${acc.name}] Audio failed — identifier=${identifier} detail=${JSON.stringify(item.metadata || 'none')}`);
+      throw new Error(`Audio generation failed: ${errDetail || 'unknown error'}`);
     }
   }
 
