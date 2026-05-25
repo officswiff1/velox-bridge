@@ -1981,27 +1981,50 @@ async function checkAccountPlan(acc) {
           const w = await r2.json();
           acc.isTeam  = w.profile?.isTeams || false;
           acc.isTrial = w.profile?.isTrial || false;
-          if (acc.isTeam) {
-            // Business/Teams wallet returns org-wide credits, not per-user quota —
-            // showing them would be misleading (user's actual spendable amount is lower).
-            acc.credits = null; acc.creditsTotal = null; acc.creditsUsed = null;
-          } else {
-            const planCreds  = w.creditsAvailable || 0;
-            const addonCreds = w.creditsAddonsAvailable || 0;
-            acc.credits      = w.totalCreditsAvailable != null ? w.totalCreditsAvailable : planCreds + addonCreds;
-            acc.creditsTotal = w.totalCreditsOfPlan || 0;
-            acc.creditsUsed  = w.creditsSpend || 0;
-            acc.creditsAddons = addonCreds;
-            acc.autoRefill   = w.autoRefill || false;
-          }
+          const planCreds  = w.creditsAvailable || 0;
+          const addonCreds = w.creditsAddonsAvailable || 0;
+          acc.credits      = w.totalCreditsAvailable != null ? w.totalCreditsAvailable : planCreds + addonCreds;
+          acc.creditsTotal = w.totalCreditsOfPlan || 0;
+          acc.creditsUsed  = w.creditsSpend || 0;
+          acc.creditsAddons = addonCreds;
+          acc.autoRefill   = w.autoRefill || false;
         }
       } catch (e) {
         addLog('WARN', `[${acc.name}] Wallet check failed: ${e.message}`);
       }
     }
 
+    // Step 3: per-user available balance (separate endpoint — covers Business/Teams correctly)
+    // This is what the Magnific website shows in the account dropdown "Available: X"
+    try {
+      const r3 = await fetch(`${BASE}/user/api/credits`, {
+        headers: planHeaders,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r3.status === 200) {
+        const c = await r3.json();
+        // API returns { available, spent, total } or { credits: { available, spent, total } }
+        const avail = c.available ?? c.credits?.available ?? c.balance ?? c.creditsAvailable ?? null;
+        const spent = c.spent     ?? c.credits?.spent     ?? c.creditsSpend ?? null;
+        const total = c.total     ?? c.credits?.total     ?? c.creditsTotal ?? null;
+        if (avail != null) {
+          acc.credits      = avail;
+          if (spent != null) acc.creditsUsed  = spent;
+          if (total != null) acc.creditsTotal = total;
+          addLog('INFO', `[${acc.name}] Per-user credits: available=${avail} spent=${spent ?? '?'} total=${total ?? '?'}`);
+        } else {
+          // Unknown shape — log raw so we can adapt
+          addLog('WARN', `[${acc.name}] /user/api/credits unknown shape: ${JSON.stringify(c).slice(0, 200)}`);
+        }
+      } else {
+        addLog('WARN', `[${acc.name}] /user/api/credits HTTP ${r3.status} — falling back to wallet credits`);
+      }
+    } catch (e) {
+      addLog('WARN', `[${acc.name}] Per-user credits check failed: ${e.message} — using wallet credits`);
+    }
+
     acc.planCheckedAt = Date.now();
-    addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan}${acc.isTeam ? ' (Team)' : ''} | Credits: ${acc.credits != null ? `${acc.credits}/${acc.creditsTotal ?? '?'}` : 'N/A (Business/Team)'} | Expiry: ${acc.planExpiry || 'N/A'}`);
+    addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan}${acc.isTeam ? ' (Team)' : ''} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
 
     // Auto-deactivate free accounts — they can't generate anything useful
     if (acc.planStatus === 'free') {
