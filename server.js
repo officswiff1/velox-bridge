@@ -3205,6 +3205,7 @@ Bulk (array of objects):
       let cookieStr = raw;
       if (raw.includes('\\t') || raw.trim().startsWith('#')) {
         cookieStr = raw.split('\\n')
+          .map(l => l.startsWith('#HttpOnly_') ? l.slice('#HttpOnly_'.length) : l)  // strip #HttpOnly_ prefix — it's not a comment, it's a domain prefix
           .filter(l => l && !l.startsWith('#'))
           .map(l => { const p=l.split('\\t'); return p.length>=7 ? p[5]+'='+p[6] : null; })
           .filter(Boolean).join('; ');
@@ -3528,6 +3529,28 @@ app.post("/manage/add", adminAuthMiddleware, express.json(), async (req, res) =>
   if (json_data) {
     let parsed;
     try { parsed = JSON.parse(json_data); } catch { return res.json({ ok: false, error: "Invalid JSON" }); }
+
+    // Detect Cookie-Editor format: array of {name, value, domain, ...} objects
+    // Convert to a single account object with cookieString
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name !== undefined && parsed[0].value !== undefined && !parsed[0].cookieString) {
+      const cookieString = parsed.map(c => `${c.name}=${c.value}`).join('; ');
+      const uidCookie = parsed.find(c => c.name === 'UID');
+      const grTokenCookie = parsed.find(c => c.name === 'GR_TOKEN');
+      let detectedEmail = name?.trim() || '';
+      let detectedUserId = userId?.trim() || (uidCookie ? uidCookie.value : '');
+      if (!detectedEmail && grTokenCookie) {
+        try {
+          const parts = grTokenCookie.value.split('.');
+          if (parts.length >= 2) {
+            const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+            if (payload.email) detectedEmail = payload.email;
+          }
+        } catch {}
+      }
+      if (!detectedEmail) return res.json({ ok: false, error: "Could not detect email from GR_TOKEN — please add a name field" });
+      parsed = [{ name: detectedEmail, userId: detectedUserId, cookieString, video }];
+    }
+
     const arr = Array.isArray(parsed) ? parsed : [parsed];
     let added = 0;
     for (const obj of arr) {
@@ -3546,11 +3569,40 @@ app.post("/manage/add", adminAuthMiddleware, express.json(), async (req, res) =>
   }
 
   // Cookie string / Netscape format
-  if (!name?.trim() || !cookies?.trim()) {
-    return res.json({ ok: false, error: "name and cookies are required (or use json_data)" });
+  if (!cookies?.trim()) {
+    return res.json({ ok: false, error: "cookies are required (or use json_data for JSON format)" });
   }
 
-  acc = parseAccountFromObj({ name: name.trim(), userId, folderRef, cookieString: cookies.trim(), video });
+  // Normalise Netscape format server-side (in case client-side detection missed it)
+  let cookieStrNorm = cookies.trim();
+  if (cookieStrNorm.includes('\t') || cookieStrNorm.startsWith('#')) {
+    cookieStrNorm = cookieStrNorm.split('\n')
+      .map(l => l.startsWith('#HttpOnly_') ? l.slice('#HttpOnly_'.length) : l)
+      .filter(l => l && !l.startsWith('#'))
+      .map(l => { const p = l.split('\t'); return p.length >= 7 ? `${p[5]}=${p[6].trim()}` : null; })
+      .filter(Boolean).join('; ');
+  }
+  if (!cookieStrNorm) return res.json({ ok: false, error: "Could not parse cookie data — check format" });
+
+  // Auto-detect name from GR_TOKEN JWT if not provided
+  let accName = name?.trim() || '';
+  let accUserId = userId?.trim() || '';
+  if (!accName) {
+    const grTokenVal = extractCookieValue(cookieStrNorm, 'GR_TOKEN');
+    if (grTokenVal) {
+      try {
+        const parts = grTokenVal.split('.');
+        if (parts.length >= 2) {
+          const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+          if (payload.email) accName = payload.email;
+        }
+      } catch {}
+    }
+  }
+  if (!accName) return res.json({ ok: false, error: "Could not detect email — check that GR_TOKEN cookie is present" });
+  if (!accUserId) accUserId = extractCookieValue(cookieStrNorm, 'UID');
+
+  acc = parseAccountFromObj({ name: accName, userId: accUserId, folderRef, cookieString: cookieStrNorm, video });
   if (!acc) return res.json({ ok: false, error: "Invalid cookie string — could not parse cookies" });
 
   if (USING_ENV_ACCOUNTS || true) {
