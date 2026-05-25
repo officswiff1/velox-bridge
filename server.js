@@ -351,6 +351,7 @@ function parseAccountFromObj(obj) {
     grTokenExpiry: getTokenExpiry(grToken),
     status: obj.status || "active",
     video: obj.video || false,
+    videoOverride: obj.videoOverride || false,
     email: obj.email || obj.name || "",
   };
 }
@@ -403,6 +404,7 @@ function exportAccountsJSON() {
       grToken: a.grToken,
       grRefresh: a.grRefresh,
       video: a.video || false,
+      videoOverride: a.videoOverride || false,
       status: a.status,
     })),
     null, 2
@@ -1996,8 +1998,8 @@ async function checkAccountPlan(acc) {
     }
 
     // Auto-enable/disable video based on credit balance.
-    // Video generation costs credits — only enable for accounts that have them.
-    if (acc.credits != null) {
+    // Skipped if user manually set video via Edit — videoOverride=true takes precedence.
+    if (acc.credits != null && !acc.videoOverride) {
       const hadVideo = acc.video;
       acc.video = acc.credits > 0;
       if (acc.video && !hadVideo)
@@ -3651,10 +3653,10 @@ app.post("/manage/update", adminAuthMiddleware, express.json(), async (req, res)
   const { name, video, status, email } = req.body || {};
   const acc = manager.accounts.find(a => a.name === name);
   if (!acc) return res.json({ ok: false, error: "Account not found" });
-  if (video !== undefined) acc.video = Boolean(video);
+  if (video !== undefined) { acc.video = Boolean(video); acc.videoOverride = true; } // manual override — survives plan checks
   if (status && ['active','inactive'].includes(status)) acc.status = status;
   if (email?.trim()) acc.email = email.trim();
-  addLog('INFO', `Account updated: ${name} (video=${acc.video})`);
+  addLog('INFO', `Account updated: ${name} (video=${acc.video}, override=true)`);
   const sync = await syncToRender();
   return res.json({ ok: true, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
 });
