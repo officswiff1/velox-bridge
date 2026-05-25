@@ -12,7 +12,9 @@ const API_SECRET = process.env.API_SECRET || "";
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || "";
 const BASE = "https://www.magnific.com";
 const RENDER_BASE = "https://ak-data.magnific.com";
-const AUTO_DELETE = process.env.AUTO_DELETE !== "false"; // default true — delete creations after generation
+const AUTO_DELETE = true; // always delete creations after generation — never store in account history
+const RENDER_API_KEY    = process.env.RENDER_API_KEY    || '';
+const RENDER_SERVICE_ID = process.env.RENDER_SERVICE_ID || '';
 
 // ── TOTP admin auth ────────────────────────────────────────────────────────────
 let TOTP_INSTANCE = null;
@@ -405,6 +407,41 @@ function exportAccountsJSON() {
     })),
     null, 2
   );
+}
+
+// ── Render env-var sync ───────────────────────────────────────────────────────
+// Persists in-memory accounts back to the ACCOUNTS_JSON env var on Render so
+// changes survive a redeploy without any manual copy-paste.
+async function syncToRender() {
+  if (!RENDER_API_KEY || !RENDER_SERVICE_ID) return { ok: false, reason: 'RENDER_API_KEY / RENDER_SERVICE_ID not configured' };
+  try {
+    const listR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
+      headers: { Authorization: `Bearer ${RENDER_API_KEY}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!listR.ok) return { ok: false, reason: `Render list env-vars: HTTP ${listR.status}` };
+    const current = await listR.json();
+    const newJson = exportAccountsJSON();
+    const updated = current.map(ev => ({
+      key: ev.envVar.key,
+      value: ev.envVar.key === 'ACCOUNTS_JSON' ? newJson : (ev.envVar.value || ''),
+    }));
+    if (!updated.some(v => v.key === 'ACCOUNTS_JSON')) updated.push({ key: 'ACCOUNTS_JSON', value: newJson });
+    const putR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${RENDER_API_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(updated),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!putR.ok) {
+      const t = await putR.text();
+      return { ok: false, reason: `Render PUT: HTTP ${putR.status} — ${t.slice(0,120)}` };
+    }
+    addLog('INFO', `Accounts synced to Render (${manager.accounts.length} account(s))`);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
 }
 
 // ── Per-account concurrency semaphore ────────────────────────────────────────
@@ -2043,17 +2080,19 @@ app.post("/v1/images/generate", auth, async (req, res) => {
   }
 
   try {
+    const _t0 = Date.now();
     const { images, account } = await generateWithRotation({
       prompt,
       num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
       aspect_ratio,
       model: resolvedModel,
       variations: Boolean(variations),
-      folder: folder || null,   // override account's default folder_reference
+      folder: folder || null,
     });
 
     res.json({
       created: Math.floor(Date.now() / 1000),
+      processing_time_ms: Date.now() - _t0,
       data: images.map(img => ({
         url: img.url,
         preview_url: img.preview,
@@ -2134,6 +2173,7 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
   if (references.length > 0 && !vm.refs) return res.status(400).json({ error: `Model "${model}" does not support references` });
 
   try {
+    const _t0 = Date.now();
     const { video, account } = await generateVideoWithRotation({
       prompt,
       model,
@@ -2151,6 +2191,7 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
 
     res.json({
       created: Math.floor(Date.now() / 1000),
+      processing_time_ms: Date.now() - _t0,
       data: {
         url: video.url,
         prompt: video.prompt,
@@ -2254,6 +2295,7 @@ app.post('/v1/audio/generate', auth, async (req, res) => {
   }
 
   try {
+    const _t0 = Date.now();
     const { audio, account } = await generateAudioWithRotation({
       text: text.trim(),
       model,
@@ -2268,6 +2310,7 @@ app.post('/v1/audio/generate', auth, async (req, res) => {
 
     res.json({
       created: Math.floor(Date.now() / 1000),
+      processing_time_ms: Date.now() - _t0,
       data: {
         url: audio.url,
         text: audio.text,
@@ -2701,7 +2744,9 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
       <h1>Magnific API Admin</h1>
       <div style="color:#555;font-size:12px;margin-top:2px">Storage: <span class="storage-badge">${storageMode}</span></div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="syncBadge" style="font-size:11px;padding:3px 8px;border-radius:5px;background:#0f1a0f;color:#4ade80;border:1px solid #166534;display:none">✓ Synced</span>
+      <button class="btn btn-sm btn-green" onclick="syncAccounts(this)">↑ Sync to Render</button>
       <a href="/docs" class="btn btn-sm btn-gray" target="_blank">Docs</a>
       <a href="/admin/export-accounts" class="btn btn-sm btn-gray" download>Export JSON</a>
       <a href="/admin/logout" class="btn btn-sm btn-danger">Logout</a>
@@ -2766,38 +2811,68 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
 
   <!-- Add Account -->
   <div class="card">
-    <h2>Add Account</h2>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">
-      <div style="flex:1;min-width:160px">
-        <label>Email / Name</label>
-        <input type="text" id="accName" placeholder="user@gmail.com">
-      </div>
-      <div style="flex:1;min-width:120px">
-        <label>User ID (from UID cookie)</label>
-        <input type="text" id="userId" placeholder="8837992">
-      </div>
-      <div style="flex:1;min-width:180px">
-        <label>Folder Reference (UUID, optional)</label>
-        <input type="text" id="folderRef" placeholder="a17a3809-...">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0">Add Account</h2>
+      <div style="display:flex;gap:6px">
+        <button id="tabCookie" class="btn btn-sm" onclick="setAddTab('cookie')" style="background:#3b82f6">Cookie / Netscape</button>
+        <button id="tabJson" class="btn btn-sm btn-gray" onclick="setAddTab('json')">JSON Format</button>
       </div>
     </div>
-    <label>
-      Cookie String or Netscape format — paste from DevTools → Network → request to magnific.com → Cookie header
-    </label>
-    <textarea id="cookies" rows="4" placeholder="magnific_session=...; GR_REFRESH=...; GR_TOKEN=...; UID=...; XSRF-TOKEN=...
 
-Or Netscape format (from EditThisCookie export):
+    <!-- Cookie/Netscape tab -->
+    <div id="addTabCookie">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+        <div style="flex:1;min-width:160px">
+          <label>Email / Name</label>
+          <input type="text" id="accName" placeholder="user@gmail.com">
+        </div>
+        <div style="flex:1;min-width:120px">
+          <label>User ID (UID cookie value)</label>
+          <input type="text" id="userId" placeholder="8837992">
+        </div>
+        <div style="flex:1;min-width:180px">
+          <label>Folder Reference (UUID, optional)</label>
+          <input type="text" id="folderRef" placeholder="a17a3809-...">
+        </div>
+      </div>
+      <label>Cookie String or Netscape format — paste from DevTools → Network → Cookie header on magnific.com</label>
+      <textarea id="cookies" rows="5" placeholder="magnific_session=...; GR_REFRESH=...; GR_TOKEN=...; UID=...; XSRF-TOKEN=...
+
+─ OR Netscape format (EditThisCookie / Cookie-Editor export) ─
 # Netscape HTTP Cookie File
-.magnific.com	TRUE	/	FALSE	1234567890	magnific_session	abc..."></textarea>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <label style="display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px;cursor:pointer;margin:0">
-        <input type="checkbox" id="videoEnabled" style="width:15px;height:15px;margin:0"> Video-capable account
-      </label>
-      <button class="btn" onclick="addAccount()">Add Account</button>
+.magnific.com	TRUE	/	FALSE	1234567890	magnific_session	abc123...
+.magnific.com	TRUE	/	FALSE	1234567890	XSRF-TOKEN	eyJ..."></textarea>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px;cursor:pointer;margin:0">
+          <input type="checkbox" id="videoEnabled" style="width:15px;height:15px;margin:0"> Video-capable account
+        </label>
+        <button class="btn" onclick="addAccount('cookie')">Add Account</button>
+      </div>
     </div>
-    ${USING_ENV_ACCOUNTS ? `<div style="margin-top:10px;padding:8px 12px;background:#1a1a00;border:1px solid #3a3a00;border-radius:6px;font-size:11px;color:#facc15">
-      ⚠️ Running with ACCOUNTS_JSON env var. After adding/removing accounts, click <b>Export JSON</b> above, then update your Render env var and redeploy to make changes permanent.
-    </div>` : ''}
+
+    <!-- JSON tab -->
+    <div id="addTabJson" style="display:none">
+      <label>Paste a single account JSON object or an array of objects — supports bulk import</label>
+      <textarea id="jsonInput" rows="8" placeholder='Single account:
+{
+  "name": "user@gmail.com",
+  "userId": "8837992",
+  "folderRef": "a17a3809-...",
+  "cookieString": "magnific_session=...; GR_REFRESH=...; GR_TOKEN=...; UID=...; XSRF-TOKEN=...",
+  "video": false
+}
+
+Bulk (array of objects):
+[{"name":"acc1@gmail.com","cookieString":"..."},{"name":"acc2@gmail.com","cookieString":"..."}]'></textarea>
+      <button class="btn" onclick="addAccount('json')">Add from JSON</button>
+    </div>
+
+    <div id="addResult" style="margin-top:8px;font-size:12px"></div>
+    ${RENDER_API_KEY ? `<div style="margin-top:8px;padding:7px 11px;background:#0f1a0f;border:1px solid #166534;border-radius:6px;font-size:11px;color:#4ade80">
+      ✓ Render auto-sync enabled — accounts are saved to env var automatically on add/remove
+    </div>` : `<div style="margin-top:8px;padding:7px 11px;background:#1a1a00;border:1px solid #3a3a00;border-radius:6px;font-size:11px;color:#facc15">
+      ⚠️ Set RENDER_API_KEY + RENDER_SERVICE_ID env vars to enable auto-sync (or use Export JSON button manually)
+    </div>`}
   </div>
 
   <!-- Logs -->
@@ -2995,28 +3070,64 @@ Or Netscape format (from EditThisCookie export):
     }
 
     // ── Accounts ───────────────────────────────────────────────────────────────
-    async function addAccount() {
-      const name = document.getElementById('accName').value.trim();
-      const userId = document.getElementById('userId').value.trim();
-      const folderRef = document.getElementById('folderRef').value.trim();
-      const rawCookies = document.getElementById('cookies').value.trim();
-      const video = document.getElementById('videoEnabled').checked;
-      if (!name || !rawCookies) return toast('Name and cookies are required', false);
-      // Parse Netscape format if detected
-      let cookies = rawCookies;
-      if (rawCookies.includes('\\t') || rawCookies.startsWith('# Netscape')) {
-        cookies = rawCookies.split('\\n')
-          .filter(l => l && !l.startsWith('#'))
-          .map(l => { const p=l.split('\\t'); return p.length>=7 ? p[5]+'='+p[6] : null; })
-          .filter(Boolean).join('; ');
+    function setAddTab(tab) {
+      document.getElementById('addTabCookie').style.display = tab==='cookie' ? '' : 'none';
+      document.getElementById('addTabJson').style.display   = tab==='json'   ? '' : 'none';
+      document.getElementById('tabCookie').className = 'btn btn-sm ' + (tab==='cookie' ? '' : 'btn-gray');
+      document.getElementById('tabJson').className   = 'btn btn-sm ' + (tab==='json'   ? '' : 'btn-gray');
+    }
+
+    async function addAccount(tab) {
+      const resEl = document.getElementById('addResult');
+      resEl.innerHTML = '⏳ Adding…';
+      let body;
+      if (tab === 'json') {
+        const jsonInput = document.getElementById('jsonInput').value.trim();
+        if (!jsonInput) { resEl.innerHTML = '<span style="color:#f87171">Paste JSON first</span>'; return; }
+        body = { json_data: jsonInput };
+      } else {
+        const name = document.getElementById('accName').value.trim();
+        const userId = document.getElementById('userId').value.trim();
+        const folderRef = document.getElementById('folderRef').value.trim();
+        const rawCookies = document.getElementById('cookies').value.trim();
+        const video = document.getElementById('videoEnabled').checked;
+        if (!name || !rawCookies) { resEl.innerHTML = '<span style="color:#f87171">Name and cookies are required</span>'; return; }
+        // Parse Netscape format if detected (tab-separated lines)
+        let cookies = rawCookies;
+        if (rawCookies.includes('\\t') || rawCookies.startsWith('# Netscape')) {
+          cookies = rawCookies.split('\\n')
+            .filter(l => l && !l.startsWith('#'))
+            .map(l => { const p=l.split('\\t'); return p.length>=7 ? p[5]+'='+p[6] : null; })
+            .filter(Boolean).join('; ');
+        }
+        body = { name, userId, folderRef, cookies, video };
       }
-      const r = await fetch('/manage/add', {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ name, userId, folderRef, cookies, video }),
-      });
-      const d = await r.json();
-      if (d.ok) { toast('Account added!'); setTimeout(() => location.reload(), 1200); }
-      else toast(d.error || 'Failed', false);
+      try {
+        const d = await fetch('/manage/add', {
+          method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body),
+        }).then(r=>r.json());
+        if (d.ok) {
+          const syncMsg = d.synced ? ' · <span style="color:#4ade80">✓ Synced to Render</span>' : (d.sync_error ? \` · <span style="color:#facc15">⚠ Sync: \${d.sync_error}</span>\` : '');
+          resEl.innerHTML = \`<span style="color:#4ade80">✅ Added\${d.added>1?' '+d.added+' accounts':''}\${syncMsg}</span>\`;
+          setTimeout(()=>location.reload(), 1800);
+        } else {
+          resEl.innerHTML = \`<span style="color:#f87171">❌ \${d.error||'Failed'}</span>\`;
+        }
+      } catch(e) { resEl.innerHTML = \`<span style="color:#f87171">Error: \${e.message}</span>\`; }
+    }
+
+    async function syncAccounts(btn) {
+      btn.textContent='Syncing…'; btn.disabled=true;
+      try {
+        const d = await fetch('/manage/sync',{method:'POST'}).then(r=>r.json());
+        if (d.ok) {
+          toast(d.message||'Synced!');
+          const badge = document.getElementById('syncBadge');
+          badge.style.display='inline-block';
+          setTimeout(()=>{badge.style.display='none';}, 5000);
+        } else toast('Sync failed: '+(d.error||'unknown'), false);
+      } catch(e) { toast('Sync error: '+e.message, false); }
+      btn.textContent='↑ Sync to Render'; btn.disabled=false;
     }
 
     async function refreshPlans(btn) {
@@ -3053,6 +3164,21 @@ Or Netscape format (from EditThisCookie export):
       if (d.ok) { toast('Removed!'); setTimeout(()=>location.reload(), 1000); }
       else toast(d.error||'Failed', false);
     }
+
+    // ── Elapsed-time progress helper ───────────────────────────────────────────
+    function startTimer(elId, expectedSec) {
+      const el = document.getElementById(elId);
+      const start = Date.now();
+      const tid = setInterval(() => {
+        const sec = Math.floor((Date.now()-start)/1000);
+        const pct = expectedSec ? Math.min(95, Math.round(sec/expectedSec*100)) : null;
+        const bar = pct !== null ? \`<div style="margin-top:5px;background:#1a1a1a;border-radius:3px;height:4px;overflow:hidden"><div style="background:#3b82f6;height:100%;width:\${pct}%;transition:width 1s linear"></div></div>\` : '';
+        const cur = el.innerHTML.split('<!--timer-->')[0];
+        el.innerHTML = cur + \`<!--timer--><div style="font-size:11px;color:#555;margin-top:4px">\${sec}s elapsed\${pct!==null?' · ~'+pct+'% complete':''}\${bar}</div>\`;
+      }, 1000);
+      return tid;
+    }
+    function stopTimer(tid) { clearInterval(tid); }
 
     // ── Logs ───────────────────────────────────────────────────────────────────
     async function loadLogs() {
@@ -3132,17 +3258,20 @@ Or Netscape format (from EditThisCookie export):
       if (!prompt) return toast('Enter a prompt', false);
       const el=document.getElementById('testResult');
       el.innerHTML=\`⏳ Generating \${num_images} image(s) with <b>\${model}</b>…\`;
+      const tid=startTimer('testResult', 15);
       try {
         const d=await fetch('/v1/images/generate',{method:'POST',headers:{'content-type':'application/json'},
           body:JSON.stringify({prompt,num_images,aspect_ratio:document.getElementById('testRatio').value,model,variations})}).then(r=>r.json());
+        stopTimer(tid);
         if (d.data?.length) {
-          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ \${d.data.length} image(s) · account: \${d.account}</div>\`+
+          const tms = d.processing_time_ms ? \` · \${(d.processing_time_ms/1000).toFixed(1)}s\` : '';
+          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ \${d.data.length} image(s) · account: \${d.account}\${tms}</div>\`+
             d.data.map(img=>\`<div style="margin-bottom:12px"><a href="\${img.url}" target="_blank">
               <img src="\${img.preview_url||img.url}" loading="lazy" style="max-width:280px;border-radius:8px;border:1px solid #333"></a>
               <div style="font-size:11px;color:#888;margin-top:3px">\${img.width}×\${img.height} · <b style="color:#eee">\${img.mode}</b> · seed: \${img.seed}</div>
               <a href="\${img.url}" target="_blank" class="dl">Full res ↗</a></div>\`).join('');
-        } else el.innerHTML=\`<span style='color:#f87171'>Error: \${d.error||JSON.stringify(d)}</span>\`;
-      } catch(e) { el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
+        } else { stopTimer(tid); el.innerHTML=\`<span style='color:#f87171'>Error: \${d.error||JSON.stringify(d)}</span>\`; }
+      } catch(e) { stopTimer(tid); el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
     }
 
     async function testVideo() {
@@ -3150,19 +3279,22 @@ Or Netscape format (from EditThisCookie export):
       const model=document.getElementById('vidModel').value;
       if (!prompt) return toast('Enter a prompt', false);
       const el=document.getElementById('vidResult');
-      el.innerHTML=\`⏳ Generating video with <b>\${model}</b> — may take 2–5 min…\`;
+      el.innerHTML=\`⏳ Generating video with <b>\${model}</b>…\`;
+      const tid=startTimer('vidResult', 90);
       try {
         const d=await fetch('/v1/videos/generate',{method:'POST',headers:{'content-type':'application/json'},
           body:JSON.stringify({prompt,model,aspect_ratio:document.getElementById('vidRatio').value,
             duration:parseInt(document.getElementById('vidDur').value),resolution:document.getElementById('vidRes').value,
             sound_effects:document.getElementById('vidSound').checked})}).then(r=>r.json());
+        stopTimer(tid);
         if (d.data?.url) {
-          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account}</div>
+          const tms = d.processing_time_ms ? \` · \${(d.processing_time_ms/1000).toFixed(1)}s\` : '';
+          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account}\${tms}</div>
             <video controls><source src="\${d.data.url}" type="video/mp4"></video>
             <div style="font-size:11px;color:#888;margin-top:3px">\${d.data.model} · \${d.data.duration}s · \${d.data.resolution}</div>
             <a href="\${d.data.url}" target="_blank" class="dl">⬇ Download</a>\`;
         } else el.innerHTML=\`<span style='color:#f87171'>Error: \${d.error||JSON.stringify(d)}</span>\`;
-      } catch(e) { el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
+      } catch(e) { stopTimer(tid); el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
     }
 
     async function testAudio() {
@@ -3172,20 +3304,23 @@ Or Netscape format (from EditThisCookie export):
       if (!text) return toast('Enter text', false);
       const el=document.getElementById('audioResult');
       el.innerHTML=\`⏳ Generating with <b>\${model}</b>…\`;
+      const tid=startTimer('audioResult', 20);
       try {
         const body={text,model,style:document.getElementById('audioStyle').value,
           speed:parseFloat(document.getElementById('audioSpeed').value),
           temperature:parseFloat(document.getElementById('audioTemp').value)};
         if (voiceId) body.voice_id=parseInt(voiceId)||voiceId;
         const d=await fetch('/v1/audio/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+        stopTimer(tid);
         if (d.data?.url) {
           const isWav=d.data.url.includes('.wav');
-          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account}</div>
+          const tms = d.processing_time_ms ? \` · \${(d.processing_time_ms/1000).toFixed(1)}s\` : '';
+          el.innerHTML=\`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account}\${tms}</div>
             <audio controls><source src="\${d.data.url}" type="\${isWav?'audio/wav':'audio/mpeg'}"></audio>
             <div style="font-size:11px;color:#888;margin-top:3px">\${d.data.model} · \${d.data.voice} · \${d.data.duration}s</div>
             <a href="\${d.data.url}" target="_blank" class="dl">⬇ Download</a>\`;
         } else el.innerHTML=\`<span style='color:#f87171'>Error: \${d.error||JSON.stringify(d)}</span>\`;
-      } catch(e) { el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
+      } catch(e) { stopTimer(tid); el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
     }
 
     let _upscaleImageData = null; // base64 data URL from file picker
@@ -3234,8 +3369,9 @@ Or Netscape format (from EditThisCookie export):
           return;
         }
       } else {
-        el.innerHTML = \`⏳ Upscaling \${scale}× with <b>\${model}</b>… (this may take ~2-5 min)\`;
+        el.innerHTML = \`⏳ Upscaling \${scale}× with <b>\${model}</b>…\`;
       }
+      const tid = startTimer('upscaleResult', 120);
 
       try {
         const body = {
@@ -3255,16 +3391,18 @@ Or Netscape format (from EditThisCookie export):
         const d = await fetch('/v1/images/upscale', {
           method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body),
         }).then(r => r.json());
+        stopTimer(tid);
 
         if (d.data?.url) {
-          el.innerHTML = \`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account} · \${d.data.width}×\${d.data.height}</div>
+          const tms = d.processing_time_ms ? \` · \${(d.processing_time_ms/1000).toFixed(1)}s\` : '';
+          el.innerHTML = \`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account} · \${d.data.width}×\${d.data.height}\${tms}</div>
             <img src="\${d.data.url}" style="max-width:100%;border-radius:8px;border:1px solid #222">
             <div style="font-size:11px;color:#888;margin-top:4px">\${d.data.model} · \${d.data.engine} · \${d.data.scale}×</div>
             <a href="\${d.data.url}" target="_blank" class="dl">⬇ Download full resolution</a>\`;
         } else {
           el.innerHTML = \`<span style='color:#f87171'>Error: \${d.error || JSON.stringify(d)}</span>\`;
         }
-      } catch(e) { el.innerHTML = \`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
+      } catch(e) { stopTimer(tid); el.innerHTML = \`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
     }
 
     let _bgImageData = null;
@@ -3309,26 +3447,52 @@ Or Netscape format (from EditThisCookie export):
 app.get("/manage", (req, res) => res.redirect("/admin"));
 
 // ── POST /manage/add ──────────────────────────────────────────────────────────
-app.post("/manage/add", express.json(), (req, res) => {
-  const { name, userId, folderRef, cookies, video = false } = req.body || {};
-  if (!name?.trim() || !cookies?.trim()) {
-    return res.json({ ok: false, error: "name and cookies are required" });
+app.post("/manage/add", adminAuthMiddleware, express.json(), async (req, res) => {
+  const { name, userId, folderRef, cookies, json_data, video = false } = req.body || {};
+
+  let acc = null;
+
+  // JSON format: paste full account object (or array — bulk add)
+  if (json_data) {
+    let parsed;
+    try { parsed = JSON.parse(json_data); } catch { return res.json({ ok: false, error: "Invalid JSON" }); }
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    let added = 0;
+    for (const obj of arr) {
+      const a = parseAccountFromObj(obj);
+      if (!a) continue;
+      if (manager.accounts.find(x => x.name === a.name)) continue; // skip duplicates
+      a.semaphore = new AccountSemaphore(SLOTS_PER_ACCOUNT);
+      a.lastRefresh = {};
+      manager.accounts.push(a);
+      added++;
+    }
+    if (added === 0) return res.json({ ok: false, error: "No valid accounts found in JSON (check cookieString field)" });
+    addLog("INFO", `${added} account(s) added from JSON`);
+    const sync = await syncToRender();
+    return res.json({ ok: true, added, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
   }
 
-  if (USING_ENV_ACCOUNTS) {
-    // In-memory add (ACCOUNTS_JSON mode — user must export + update env var to persist)
-    const acc = parseAccountFromObj({ name, userId, folderRef, cookieString: cookies.trim(), video });
-    if (!acc) return res.json({ ok: false, error: "Invalid cookie string" });
+  // Cookie string / Netscape format
+  if (!name?.trim() || !cookies?.trim()) {
+    return res.json({ ok: false, error: "name and cookies are required (or use json_data)" });
+  }
+
+  acc = parseAccountFromObj({ name: name.trim(), userId, folderRef, cookieString: cookies.trim(), video });
+  if (!acc) return res.json({ ok: false, error: "Invalid cookie string — could not parse cookies" });
+
+  if (USING_ENV_ACCOUNTS || true) {
+    if (manager.accounts.find(a => a.name === acc.name)) return res.json({ ok: false, error: "Account already exists" });
     acc.semaphore = new AccountSemaphore(SLOTS_PER_ACCOUNT);
     acc.lastRefresh = {};
     manager.accounts.push(acc);
-    addLog("INFO", `Account added (in-memory): ${name}`);
-    return res.json({ ok: true, warn: "ACCOUNTS_JSON mode — export and update env var to persist" });
+    addLog("INFO", `Account added: ${name}`);
+    const sync = await syncToRender();
+    return res.json({ ok: true, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
   }
 
   const safeFilename = name.replace(/[^a-zA-Z0-9._@+-]/g, "_") + ".txt";
   const filepath = path.join(__dirname, "accounts", safeFilename);
-
   const lines = [
     `# Magnific/Freepik Account — ${name}`,
     `# user_id: ${userId || ""}`,
@@ -3337,7 +3501,6 @@ app.post("/manage/add", express.json(), (req, res) => {
     `# Export date: ${new Date().toISOString().slice(0, 10)}`,
     cookies.trim(),
   ];
-
   try {
     fs.mkdirSync(path.dirname(filepath), { recursive: true });
     fs.writeFileSync(filepath, lines.join("\n"), "utf8");
@@ -3348,8 +3511,15 @@ app.post("/manage/add", express.json(), (req, res) => {
   }
 });
 
+// ── POST /manage/sync ─────────────────────────────────────────────────────────
+app.post("/manage/sync", adminAuthMiddleware, async (req, res) => {
+  const result = await syncToRender();
+  if (result.ok) res.json({ ok: true, message: `Synced ${manager.accounts.length} account(s) to Render` });
+  else res.json({ ok: false, error: result.reason });
+});
+
 // ── POST /manage/check ────────────────────────────────────────────────────────
-app.post("/manage/check", express.json(), async (req, res) => {
+app.post("/manage/check", adminAuthMiddleware, express.json(), async (req, res) => {
   const { name } = req.body || {};
   const acc = manager.accounts.find(a => a.name === name);
   if (!acc) return res.json({ ok: false, error: "Account not found" });
@@ -3362,50 +3532,27 @@ app.post("/manage/check", express.json(), async (req, res) => {
 });
 
 // ── POST /manage/remove ───────────────────────────────────────────────────────
-app.post("/manage/remove", express.json(), (req, res) => {
+app.post("/manage/remove", adminAuthMiddleware, express.json(), async (req, res) => {
   const { name } = req.body || {};
   if (!name?.trim()) return res.json({ ok: false, error: "name required" });
 
-  if (USING_ENV_ACCOUNTS) {
-    const idx = manager.accounts.findIndex(a => a.name === name);
-    if (idx === -1) return res.json({ ok: false, error: "Account not found" });
-    manager.accounts.splice(idx, 1);
-    addLog("INFO", `Account removed (in-memory): ${name}`);
-    return res.json({ ok: true, warn: "ACCOUNTS_JSON mode — export and update env var to persist" });
-  }
-
-  const dir = path.join(__dirname, "accounts");
-  if (!fs.existsSync(dir)) return res.json({ ok: false, error: "No accounts directory" });
-
-  const files = fs.readdirSync(dir).filter(f => f.endsWith(".txt") || f.endsWith(".json"));
-  let removed = false;
-
-  for (const file of files) {
-    const filepath = path.join(dir, file);
-    const content = fs.readFileSync(filepath, "utf8");
-    if (content.includes(`— ${name}`) || file.startsWith(name.replace(/[^a-zA-Z0-9._@+-]/g, "_"))) {
-      fs.unlinkSync(filepath);
-      removed = true;
-      break;
-    }
-  }
-
-  if (removed) {
-    manager.reload();
-    res.json({ ok: true });
-  } else {
-    res.json({ ok: false, error: "Account not found" });
-  }
+  const idx = manager.accounts.findIndex(a => a.name === name);
+  if (idx === -1) return res.json({ ok: false, error: "Account not found" });
+  manager.accounts.splice(idx, 1);
+  addLog("INFO", `Account removed: ${name}`);
+  const sync = await syncToRender();
+  return res.json({ ok: true, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
 });
 
 // ── POST /manage/toggle ───────────────────────────────────────────────────────
-app.post("/manage/toggle", express.json(), (req, res) => {
+app.post("/manage/toggle", adminAuthMiddleware, express.json(), async (req, res) => {
   const { name } = req.body || {};
   if (!name?.trim()) return res.json({ ok: false, error: "name required" });
   const acc = manager.accounts.find(a => a.name === name);
   if (!acc) return res.json({ ok: false, error: "Account not found" });
   acc.status = acc.status === "active" ? "inactive" : "active";
   addLog("INFO", `Account ${acc.name} toggled to ${acc.status}`);
+  syncToRender(); // fire-and-forget — persist the change
   res.json({ ok: true, name: acc.name, status: acc.status });
 });
 
