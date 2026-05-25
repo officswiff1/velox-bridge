@@ -1867,6 +1867,9 @@ async function generateVideoWithRotation(params) {
 const PLAN_CHECK_INTERVAL_MS = 3600000; // re-check every 1 hour
 
 async function checkAccountPlan(acc) {
+  // Refresh session first so GR_TOKEN is fresh — plan API rejects expired tokens
+  try { await refreshSession(acc, 'ai-image-generator'); } catch {}
+
   const planHeaders = {
     'accept': '*/*',
     'cookie': acc.cookieString,
