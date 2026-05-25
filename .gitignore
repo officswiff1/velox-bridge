@@ -1,0 +1,26 @@
+node_modules/
+.env
+context.md
+accounts/
+
+# temp discovery/test scripts
+discover*.js
+extract_models*.js
+fetch_*.js
+find_*.js
+get_*.js
+search_*.js
+router.js
+videoAIModel.js
+videoTools.js
+
+# test output files
+*.png
+*.html
+*.log
+server_out.txt
+server_err.txt
+model_region.txt
+video_models_*.json
+src.*.js
+useTracking.*.js
