@@ -2803,7 +2803,17 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
         <div class="acc-actions">
           <button class="btn btn-sm btn-gray" onclick="checkAccount('${encodeURIComponent(a.name)}',this)">Check</button>
           <button class="btn btn-sm btn-warn" onclick="toggleAccount('${encodeURIComponent(a.name)}',this)">${a.status==='active'?'Disable':'Enable'}</button>
+          <button class="btn btn-sm btn-green" onclick="toggleEditAccount('${encodeURIComponent(a.name)}')">Edit</button>
           <button class="btn btn-sm btn-danger" onclick="removeAccount('${encodeURIComponent(a.name)}')">Remove</button>
+        </div>
+        <div id="edit-${encodeURIComponent(a.name)}" style="display:none;margin-top:10px;padding:10px;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:7px">
+          <div style="font-size:11px;color:#666;margin-bottom:8px">Edit account settings (applied immediately + synced to Render)</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;font-size:12px;color:#ccc">
+            <input type="checkbox" id="edit-video-${encodeURIComponent(a.name)}" ${a.video?'checked':''} style="width:14px;height:14px;margin:0;accent-color:#3b82f6">
+            Video-capable account (enables video generation for this account)
+          </label>
+          <button class="btn btn-sm" onclick="saveAccount('${encodeURIComponent(a.name)}')">Save Changes</button>
+          <span id="edit-result-${encodeURIComponent(a.name)}" style="font-size:11px;margin-left:8px"></span>
         </div>
       </div>`).join('')}
     </div>`}
@@ -2821,27 +2831,27 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
 
     <!-- Cookie/Netscape tab -->
     <div id="addTabCookie">
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">
-        <div style="flex:1;min-width:160px">
-          <label>Email / Name</label>
-          <input type="text" id="accName" placeholder="user@gmail.com">
-        </div>
-        <div style="flex:1;min-width:120px">
-          <label>User ID (UID cookie value)</label>
-          <input type="text" id="userId" placeholder="8837992">
-        </div>
-        <div style="flex:1;min-width:180px">
-          <label>Folder Reference (UUID, optional)</label>
-          <input type="text" id="folderRef" placeholder="a17a3809-...">
-        </div>
-      </div>
-      <label>Cookie String or Netscape format — paste from DevTools → Network → Cookie header on magnific.com</label>
-      <textarea id="cookies" rows="5" placeholder="magnific_session=...; GR_REFRESH=...; GR_TOKEN=...; UID=...; XSRF-TOKEN=...
+      <label>Paste cookie string or Netscape format — email &amp; user ID are auto-detected from cookies</label>
+      <textarea id="cookies" rows="5" oninput="autoDetectFromCookies(this.value)" placeholder="magnific_session=...; GR_REFRESH=...; GR_TOKEN=...; UID=...; XSRF-TOKEN=...
 
 ─ OR Netscape format (EditThisCookie / Cookie-Editor export) ─
 # Netscape HTTP Cookie File
 .magnific.com	TRUE	/	FALSE	1234567890	magnific_session	abc123...
 .magnific.com	TRUE	/	FALSE	1234567890	XSRF-TOKEN	eyJ..."></textarea>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <div style="flex:1;min-width:140px">
+          <label>Email / Name <span style="color:#555;font-size:10px">(auto-detected)</span></label>
+          <input type="text" id="accName" placeholder="auto-detected from GR_TOKEN">
+        </div>
+        <div style="flex:1;min-width:100px">
+          <label>User ID <span style="color:#555;font-size:10px">(auto-detected)</span></label>
+          <input type="text" id="userId" placeholder="auto-detected from UID cookie">
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label>Folder Reference <span style="color:#555;font-size:10px">(optional)</span></label>
+          <input type="text" id="folderRef" placeholder="a17a3809-...">
+        </div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px;cursor:pointer;margin:0">
           <input type="checkbox" id="videoEnabled" style="width:15px;height:15px;margin:0"> Video-capable account
@@ -2879,9 +2889,10 @@ Bulk (array of objects):
   <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <h2 style="margin:0">Live Logs</h2>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-sm btn-gray" onclick="loadLogs()">↻ Refresh</button>
         <button class="btn btn-sm btn-gray" onclick="toggleAutoRefresh(this)" id="autoRefBtn">Auto ▶</button>
+        <button class="btn btn-sm btn-gray" onclick="copyLogs(this)">⎘ Copy All</button>
       </div>
     </div>
     <div id="logsBox" style="max-height:280px;overflow-y:auto;font-family:monospace;font-size:11px">Loading…</div>
@@ -3163,6 +3174,67 @@ Bulk (array of objects):
       const d = await r.json();
       if (d.ok) { toast('Removed!'); setTimeout(()=>location.reload(), 1000); }
       else toast(d.error||'Failed', false);
+    }
+
+    function toggleEditAccount(encoded) {
+      const el = document.getElementById('edit-'+encoded);
+      if (el) el.style.display = el.style.display==='none' ? '' : 'none';
+    }
+
+    async function saveAccount(encoded) {
+      const name = decodeURIComponent(encoded);
+      const video = document.getElementById('edit-video-'+encoded)?.checked ?? false;
+      const resultEl = document.getElementById('edit-result-'+encoded);
+      resultEl.textContent = 'Saving…';
+      const d = await fetch('/manage/update', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ name, video }),
+      }).then(r=>r.json());
+      if (d.ok) {
+        resultEl.innerHTML = d.synced ? '<span style="color:#4ade80">✓ Saved & synced</span>' : '<span style="color:#facc15">✓ Saved (sync failed)</span>';
+        setTimeout(()=>location.reload(), 1500);
+      } else {
+        resultEl.innerHTML = \`<span style="color:#f87171">\${d.error||'Failed'}</span>\`;
+      }
+    }
+
+    // Auto-detect email and userId from pasted cookie string
+    function autoDetectFromCookies(raw) {
+      if (!raw.trim()) return;
+      // Normalise Netscape format to key=value pairs first
+      let cookieStr = raw;
+      if (raw.includes('\\t') || raw.trim().startsWith('#')) {
+        cookieStr = raw.split('\\n')
+          .filter(l => l && !l.startsWith('#'))
+          .map(l => { const p=l.split('\\t'); return p.length>=7 ? p[5]+'='+p[6] : null; })
+          .filter(Boolean).join('; ');
+      }
+      // Extract UID
+      const uid = cookieStr.match(/(?:^|[;\\s])UID=([^;\\s]+)/i);
+      if (uid) document.getElementById('userId').value = uid[1].trim();
+      // Extract email from GR_TOKEN JWT payload
+      const jwt = cookieStr.match(/GR_TOKEN=([A-Za-z0-9._-]+)/i);
+      if (jwt) {
+        try {
+          const parts = jwt[1].split('.');
+          if (parts.length >= 2) {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+            if (payload.email) document.getElementById('accName').value = payload.email;
+          }
+        } catch {}
+      }
+    }
+
+    // Copy all logs to clipboard
+    let _allLogs = [];
+    async function copyLogs(btn) {
+      try {
+        const d = await fetch('/logs?limit=500').then(r=>r.json());
+        const text = d.map(l=>\`[\${l.ts.slice(0,19)}] [\${l.level}] \${l.msg}\`).join('\\n');
+        await navigator.clipboard.writeText(text);
+        btn.textContent='✓ Copied!';
+        setTimeout(()=>{ btn.textContent='⎘ Copy All'; }, 2000);
+      } catch(e) { toast('Copy failed: '+e.message, false); }
     }
 
     // ── Elapsed-time progress helper ───────────────────────────────────────────
@@ -3509,6 +3581,19 @@ app.post("/manage/add", adminAuthMiddleware, express.json(), async (req, res) =>
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
+});
+
+// ── POST /manage/update ───────────────────────────────────────────────────────
+app.post("/manage/update", adminAuthMiddleware, express.json(), async (req, res) => {
+  const { name, video, status, email } = req.body || {};
+  const acc = manager.accounts.find(a => a.name === name);
+  if (!acc) return res.json({ ok: false, error: "Account not found" });
+  if (video !== undefined) acc.video = Boolean(video);
+  if (status && ['active','inactive'].includes(status)) acc.status = status;
+  if (email?.trim()) acc.email = email.trim();
+  addLog('INFO', `Account updated: ${name} (video=${acc.video})`);
+  const sync = await syncToRender();
+  return res.json({ ok: true, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
 });
 
 // ── POST /manage/sync ─────────────────────────────────────────────────────────
