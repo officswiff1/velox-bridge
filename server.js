@@ -1927,10 +1927,18 @@ async function checkAccountPlan(acc) {
       acc.email = data.billing.customerBillingEmail;
     }
 
-    const isFree = data.permissions?.isFree !== false;
+    const isFree = data.permissions?.isFree === true; // only free if explicitly true — undefined/absent means unknown, not free
     const purchases = data.purchases || [];
 
     if (!purchases.length) {
+      // Business / Teams accounts may have no purchases array but still have a valid paid plan.
+      // Don't deactivate — keep active, mark plan as unknown so we don't block generation.
+      if (!isFree) {
+        Object.assign(acc, { planStatus: 'premium', plan: data.billing?.customerBillingEmail ? 'Business' : 'Unknown',
+          isPremium: true, planCheckedAt: Date.now() });
+        addLog('WARN', `[${acc.name}] No purchases array — likely Business/Teams plan; keeping active`);
+        return;
+      }
       Object.assign(acc, { planStatus: 'free', plan: 'Free', isPremium: false,
         credits: 0, creditsTotal: 0, planCheckedAt: Date.now() });
       acc.status = 'inactive';
@@ -1946,7 +1954,7 @@ async function checkAccountPlan(acc) {
     acc.planExpiry    = (purchase.purchaseNextBillingDate || '').split(' ')[0];
     acc.purchaseStatus = purchaseStatus;
 
-    const ACTIVE = new Set(['active', 'trialing', 'past_due']);
+    const ACTIVE = new Set(['active', 'trialing', 'past_due', 'non_renewed']);
     acc.isPremium  = !isFree && ACTIVE.has(purchaseStatus);
     acc.planStatus = acc.isPremium ? 'premium' : (isFree ? 'free' : 'expired');
 
