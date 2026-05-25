@@ -1168,9 +1168,11 @@ async function generateVideo(acc, {
     }
 
     if (item.status === 'failed') {
-      const errDetail = item.metadata?.error || item.metadata?.message || item.error || item.message;
-      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} detail=${JSON.stringify(item.metadata || item.error || 'none')}`);
-      throw new Error(`Video generation failed: ${errDetail || 'unknown error (model may be unavailable or account lacks access)'}`);
+      const errDetail = item.metadata?.error || item.metadata?.message || item.metadata?.reason
+        || item.error || item.message || item.reason || item.errorMessage || item.failReason
+        || item.clips?.[0]?.error || item.clips?.[0]?.metadata?.error;
+      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} full=${JSON.stringify(item).slice(0, 500)}`);
+      throw new Error(`Video generation failed: ${errDetail || 'not enough credits or model unavailable'}`);
     }
   }
 
@@ -2003,13 +2005,15 @@ async function checkAccountPlan(acc) {
 
     // Auto-enable/disable video based on credit balance.
     // Skipped if user manually set video via Edit — videoOverride=true takes precedence.
+    // Minimum 44 credits needed for the cheapest credit-based video model (Seedance 2.0 Fast).
+    const MIN_VIDEO_CREDITS = Math.min(...VIDEO_MODELS.filter(m => !m.unlimited && m.credits > 0).map(m => m.credits));
     if (acc.credits != null && !acc.videoOverride) {
       const hadVideo = acc.video;
-      acc.video = acc.credits > 0;
+      acc.video = acc.credits >= MIN_VIDEO_CREDITS;
       if (acc.video && !hadVideo)
         addLog('INFO', `[${acc.name}] Video auto-enabled — ${acc.credits.toLocaleString()} credits available`);
       else if (!acc.video && hadVideo)
-        addLog('WARN', `[${acc.name}] Video auto-disabled — credits exhausted (${acc.credits})`);
+        addLog('WARN', `[${acc.name}] Video auto-disabled — insufficient credits (${acc.credits} < ${MIN_VIDEO_CREDITS} needed)`);
     }
   } catch (e) {
     addLog('WARN', `[${acc.name}] Plan check error: ${e.message}`);
