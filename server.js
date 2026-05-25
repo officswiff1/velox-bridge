@@ -1849,6 +1849,13 @@ async function checkAccountPlan(acc) {
     });
 
     if (r1.status === 401 || r1.status === 403) {
+      const body = await r1.text();
+      // Cloudflare WAF blocks from datacenter IPs return HTML — don't deactivate, just skip
+      if (body.trim().startsWith('<') || body.includes('cloudflare') || body.includes('Just a moment')) {
+        addLog('WARN', `[${acc.name}] Plan check blocked by WAF (HTTP ${r1.status}) — keeping account active`);
+        acc.planCheckedAt = Date.now();
+        return;
+      }
       acc.planStatus = 'expired'; acc.planCheckedAt = Date.now();
       acc.status = 'inactive';
       addLog('WARN', `[${acc.name}] Auto-deactivated — session expired (HTTP ${r1.status})`);
