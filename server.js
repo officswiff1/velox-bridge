@@ -206,7 +206,7 @@ const VIDEO_MODELS = [
   { id: 'wan-2-7',                       name: 'Wan 2.7',                    credits: 260,  api: 'wan',          videoModel: 'wan',               videoMode: '2-7',               sf: true,  ef: true,  refs: true  },
   { id: 'wan-2-6',                       name: 'Wan 2.6',                    credits: 1000, api: 'wan',          videoModel: 'wan',               videoMode: '2-6',               sf: true,  ef: false, refs: false },
   { id: 'wan-2-5',                       name: 'Wan 2.5',                    credits: 500,  api: 'wan',          videoModel: 'wan',               videoMode: '2-5',               sf: true,  ef: false, refs: false },
-  { id: 'wan-2-2',                       name: 'Wan 2.2',                    credits: 0,    api: 'wan',          videoModel: 'wan',               videoMode: '2-2',               sf: true,  ef: false, refs: false, unlimited: true },
+  { id: 'wan-2-2',                       name: 'Wan 2.2',                    credits: 0,    api: 'wan',          videoModel: 'wan',               videoMode: '2-2',               sf: true,  ef: false, refs: false, unlimited: true, maxResolution: '480p', sfRequired: true },
   { id: 'wan-2-2-animate',               name: 'Wan 2.2 Animate Move',       credits: 600,  api: 'wan',          videoModel: 'wan',               videoMode: '2-2-animate',       sf: false, ef: false, refs: true  },
   { id: 'happy-horse-1',                 name: 'Happy Horse',                credits: 720,  api: 'wan',          videoModel: 'wan',               videoMode: 'happy-horse-1',     sf: true,  ef: false, refs: true  },
   { id: 'happy-horse-1-edit',            name: 'Happy Horse Edit',           credits: 720,  api: 'wan',          videoModel: 'wan',               videoMode: 'happy-horse-1-edit',sf: false, ef: false, refs: true  },
@@ -310,6 +310,7 @@ function parseAccountTxt(content, filename) {
     grTokenExpiry: getTokenExpiry(grToken),
     status: "active",
     video: videoEnabled,
+    videoOverride: videoEnabled, // explicit comment = manual override, survives plan checks
   };
 }
 
@@ -1054,6 +1055,15 @@ async function generateVideo(acc, {
 
   await refreshSession(acc);
 
+  // Upload start/end frame images to get signed CDN URLs (required by Magnific)
+  let startFrameCdnUrl = null;
+  let endFrameCdnUrl = null;
+  if (start_image || end_image) {
+    const uploaded = await uploadVideoFrame(acc, { startImage: start_image, endImage: end_image });
+    startFrameCdnUrl = uploaded.startFrameUrl;
+    endFrameCdnUrl = uploaded.endFrameUrl;
+  }
+
   const family = crypto.randomUUID();
 
   const clip = {
@@ -1069,10 +1079,12 @@ async function generateVideo(acc, {
     model: vm.videoModel,
     mode: vm.videoMode,
     slug: vm.id,
-    ...(start_image ? { startFrame: start_image } : {}),
-    ...(end_image   ? { endFrame: end_image }     : {}),
-    ...(references.length > 0 ? { references }    : {}),
-    extraParameters: { style: 'default', promptMode: prompt_mode },
+    ...((startFrameCdnUrl || endFrameCdnUrl) ? { keyframes: {
+      ...(startFrameCdnUrl ? { start: { type: 'image', url: startFrameCdnUrl } } : {}),
+      ...(endFrameCdnUrl   ? { end:   { type: 'image', url: endFrameCdnUrl   } } : {}),
+    }} : {}),
+    ...(references.length > 0 ? { references } : {}),
+    extraParameters: { style: 'default' },
     withSoundEffects: sound_effects,
     promptType: 'basic',
     resolution,
@@ -1121,7 +1133,13 @@ async function generateVideo(acc, {
     throw err;
   }
   if (!json?.success || !json?.data?.creations?.[0]) {
-    const err = new Error(`Video generation start failed (${r.status}): ${text.slice(0, 200)}`);
+    addLog('WARN', `[${acc.name}] Video start failed (${r.status}): ${text.slice(0, 400)}`);
+    // Extract a clean human-readable reason from Magnific's error JSON or HTML
+    let reason = null;
+    if (json?.message) reason = json.message;
+    else if (json?.error === 'video_throttle') reason = 'model at full capacity — try again later';
+    else if (r.status === 503) reason = 'service temporarily unavailable (Magnific server error)';
+    const err = new Error(`Video generation start failed (${r.status})${reason ? ': ' + reason : ': ' + text.slice(0, 150)}`);
     err.status = r.status;
     throw err;
   }
@@ -1171,7 +1189,7 @@ async function generateVideo(acc, {
       const errDetail = item.metadata?.error || item.metadata?.message || item.metadata?.reason
         || item.error || item.message || item.reason || item.errorMessage || item.failReason
         || item.clips?.[0]?.error || item.clips?.[0]?.metadata?.error;
-      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} full=${JSON.stringify(item).slice(0, 500)}`);
+      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} errorCode=${item.metadata?.errorCode} full=${JSON.stringify(item).slice(0, 600)}`);
       throw new Error(`Video generation failed: ${errDetail || 'not enough credits or model unavailable'}`);
     }
   }
@@ -1340,6 +1358,85 @@ async function generateAudioWithRotation(params) {
       throw e;
     }
   });
+}
+
+// ── Video frame upload ────────────────────────────────────────────────────────
+// Real 3-step flow Magnific uses for image-to-video start/end frames:
+//   1. POST /app/api/temporal-upload-url  → get GCS signed upload URL + read_url
+//   2. PUT image binary to GCS upload_url
+//   3. POST /app/api/temporal-upload-url/verify → confirm exists
+//   Returns the read_url (pikaso.cdnpk.net CDN URL) for use in keyframes.
+async function uploadOneFrame(acc, imageSource) {
+  // Download image if URL, keep as buffer
+  let imgBuffer, mimeType;
+  if (imageSource.startsWith('data:')) {
+    const m = imageSource.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) throw Object.assign(new Error('Invalid data URL for frame image'), { status: 400 });
+    mimeType = m[1];
+    imgBuffer = Buffer.from(m[2], 'base64');
+  } else {
+    const res = await fetch(imageSource, {
+      headers: { 'user-agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw Object.assign(new Error(`Failed to download frame image (HTTP ${res.status})`), { status: 400 });
+    imgBuffer = Buffer.from(await res.arrayBuffer());
+    mimeType = res.headers.get('content-type') || 'image/jpeg';
+    // Strip charset/params e.g. "image/png; charset=utf-8"
+    mimeType = mimeType.split(';')[0].trim();
+  }
+
+  const magnificHeaders = {
+    'accept': 'application/json',
+    'content-type': 'application/json',
+    'cookie': acc.cookieString,
+    'origin': BASE,
+    'referer': `${BASE}/app/ai-video-generator`,
+    'x-xsrf-token': acc.xsrf,
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+  };
+
+  // Step 1: get signed GCS upload URL
+  const r1 = await fetch(
+    `${BASE}/app/api/temporal-upload-url?lang=en_US&user_id=${acc.userId}`,
+    { method: 'POST', headers: magnificHeaders, body: JSON.stringify({ mime_type: mimeType }), signal: AbortSignal.timeout(15000) }
+  );
+  const t1 = await r1.text();
+  const j1 = JSON.parse(t1);
+  if (!r1.ok || !j1.upload_url) throw Object.assign(new Error(`temporal-upload-url failed (${r1.status}): ${t1.slice(0, 150)}`), { status: r1.status });
+
+  const { upload_url, read_url, path } = j1;
+
+  // Step 2: PUT image binary to GCS
+  const r2 = await fetch(upload_url, {
+    method: 'PUT',
+    headers: { 'content-type': mimeType },
+    body: imgBuffer,
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!r2.ok) {
+    const t2 = await r2.text();
+    throw Object.assign(new Error(`GCS upload failed (${r2.status}): ${t2.slice(0, 150)}`), { status: 500 });
+  }
+
+  // Step 3: verify
+  const r3 = await fetch(
+    `${BASE}/app/api/temporal-upload-url/verify?lang=en_US&user_id=${acc.userId}`,
+    { method: 'POST', headers: magnificHeaders, body: JSON.stringify({ path }), signal: AbortSignal.timeout(15000) }
+  );
+  const j3 = await r3.json().catch(() => ({}));
+  if (!j3.exists) throw Object.assign(new Error(`Frame upload verify failed — file not found at ${path}`), { status: 500 });
+
+  addLog('INFO', `[${acc.name}] Frame uploaded → ${read_url.slice(0, 80)}…`);
+  return read_url;
+}
+
+async function uploadVideoFrame(acc, { startImage, endImage }) {
+  const [startFrameUrl, endFrameUrl] = await Promise.all([
+    startImage ? uploadOneFrame(acc, startImage) : Promise.resolve(null),
+    endImage   ? uploadOneFrame(acc, endImage)   : Promise.resolve(null),
+  ]);
+  return { startFrameUrl, endFrameUrl };
 }
 
 // ── Image upscaling ───────────────────────────────────────────────────────────
@@ -2219,18 +2316,24 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
   }
 
   if (start_image && !vm.sf) return res.status(400).json({ error: `Model "${model}" does not support start_image` });
+  if (!start_image && vm.sfRequired) return res.status(400).json({ error: `Model "${model}" requires start_image` });
   if (end_image   && !vm.ef) return res.status(400).json({ error: `Model "${model}" does not support end_image` });
   if (references.length > 0 && !vm.refs) return res.status(400).json({ error: `Model "${model}" does not support references` });
 
   try {
     const _t0 = Date.now();
+    // Clamp resolution to model's max (e.g. wan-2-2 is only unlimited at 480p)
+    const effectiveResolution = vm.maxResolution
+      ? (['480p','720p','1080p'].indexOf(resolution) > ['480p','720p','1080p'].indexOf(vm.maxResolution) ? vm.maxResolution : resolution)
+      : resolution;
+
     const { video, account } = await generateVideoWithRotation({
       prompt,
       model,
       negative_prompt,
       aspect_ratio,
       duration: Math.min(Math.max(parseInt(duration) || 5, 1), 10),
-      resolution,
+      resolution: effectiveResolution,
       sound_effects: Boolean(sound_effects),
       start_image,
       end_image,
