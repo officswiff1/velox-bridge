@@ -266,7 +266,7 @@ Generates a video from a text prompt (and optionally a start/end image). Polls i
 | `duration` | number | `5` | | Duration in seconds (1–10) |
 | `resolution` | string | `"720p"` | | `"720p"` or `"1080p"` |
 | `sound_effects` | boolean | `true` | | Auto-generate sound effects |
-| `start_image` | string | `null` | ⚠️ Required for `wan-2-2` | Start frame URL or base64 data URL (image-to-video). Only on models that support it — check `GET /v1/models?type=video` for `features.start_image`. Some models (`wan-2-2`) **require** it — omitting it returns HTTP 400. |
+| `start_image` | string | `null` | ⚠️ Required for `wan-2-2`, `minimax-video-2_3-fast` | Start frame URL or base64 data URL (image-to-video). Only on models that support it — check `GET /v1/models?type=video` for `features.start_image`. Some models **require** it — omitting it returns HTTP 400. |
 | `end_image` | string | `null` | | End frame URL or base64 data URL. Only on models that support it. |
 | `references` | array | `[]` | | Reference media: `[{"type": "image"|"video"|"style"|"character"|"product"|"audio", "url": "..."}]`. Only on models with `features.references`. |
 | `prompt_mode` | string | `"manual"` | | `"manual"` = use prompt exactly, `"auto"` = model re-interprets |
@@ -695,8 +695,8 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. Chec
 | `kling-21` | Kling 2.1 | 275 | ✅ | ✅ | — |
 | `kling-21-master` | Kling 2.1 Master | 1400 | ✅ | — | — |
 | `kling-omni1` | Kling O1 | 225 | ✅ | ✅ | ✅ |
-| `minimax-video-2_3` | **MiniMax Hailuo 2.3 (∞ Unlimited)** | 0 | ✅ | — | — |
-| `minimax-video-2_3-fast` | **MiniMax Hailuo 2.3 Fast (∞ Unlimited)** | 0 | ✅ | — | — |
+| `minimax-video-2_3` | **MiniMax Hailuo 2.3 (∞ Unlimited)** | 0 | ✅ optional | — | — |
+| `minimax-video-2_3-fast` | **MiniMax Hailuo 2.3 Fast (∞ Unlimited)** | 0 | ✅ **required** | — | — |
 | `minimax-video-02` | MiniMax Hailuo 02 | 60 | ✅ | ✅ | — |
 | `minimax-video-01-live2d` | MiniMax Live Illustrations | 600 | ✅ | — | — |
 | `wan-2-7` | Wan 2.7 | 260 | ✅ | ✅ | ✅ |
@@ -727,7 +727,12 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. Chec
 
 **sf** = start image (image-to-video), **ef** = end image, **refs** = reference media
 
-> **`wan-2-2` note:** `start_image` is **required** (not optional) — omitting it returns HTTP 400. Resolution is also capped at **480p** regardless of what you pass. All other unlimited video models (`kling-25`, `minimax-video-2_3`, `minimax-video-2_3-fast`) have optional start image and support 720p.
+> **`wan-2-2` note:** `start_image` is **required** — omitting it returns HTTP 400. Resolution is capped at **480p** regardless of what you pass.
+>
+> **MiniMax Hailuo 2.3 notes:**
+> - `minimax-video-2_3` — text-to-video (start_image optional). Always generates at **768p, 6 seconds** regardless of `resolution`/`duration` values passed.
+> - `minimax-video-2_3-fast` — image-to-video, `start_image` is **required** — omitting it returns HTTP 400. Same 768p/6s defaults apply.
+> - `sound_effects` is ignored for both MiniMax models (they don't support it).
 
 ---
 
@@ -875,6 +880,13 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
   -d '{"prompt":"rainy forest with nostalgic thunderstorm","model":"wan-2-2","start_image":"https://example.com/forest.jpg","aspect_ratio":"16:9","resolution":"480p"}' \
   --max-time 900
 
+# Generate video with minimax-video-2_3-fast (unlimited, start_image REQUIRED, always 768p/6s)
+curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"person walking forward","model":"minimax-video-2_3-fast","start_image":"https://example.com/person.jpg","aspect_ratio":"16:9"}' \
+  --max-time 900
+
 # Describe an image
 curl -X POST https://freepik-api-qg08.onrender.com/v1/images/describe \
   -H "X-API-Key: YOUR_KEY" \
@@ -897,7 +909,8 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 ## Tips
 
 - **Start with unlimited models** — `flux-2`, `flux`, `mystic-2-5`, `imagen-nano-banana-2`, `kling-25` (video), `minimax-video-2_3` (video) all cost no credits and work out of the box
-- **`wan-2-2`** is unlimited but requires `start_image` and caps output at 480p — use `kling-25` or `minimax-video-2_3` for text-only or higher-res unlimited video
+- **`wan-2-2`** is unlimited but requires `start_image` and caps at 480p — use `kling-25` or `minimax-video-2_3` for text-only or higher-res unlimited video
+- **`minimax-video-2_3`** — free text-to-video at 768p/6s; **`minimax-video-2_3-fast`** — free image-to-video (start_image required), also 768p/6s
 - **Check model availability** — hit `GET /v1/models` first to see what's available with the current accounts
 - **Use `/health`** to see real-time slot availability before submitting long jobs
 - **Video timeout** — always set your HTTP client timeout to at least 15 minutes for video requests
