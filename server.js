@@ -3086,8 +3086,8 @@ Bulk (array of objects):
     <h2>Test Video Generation</h2>
     <textarea id="vidPrompt" rows="3" placeholder="a golden retriever running on a beach at sunset"></textarea>
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <select id="vidModel" style="flex:2;min-width:200px">
-        ${VIDEO_MODELS.map(m=>`<option value="${m.id}">${m.name}${m.unlimited?' ♾️':` (${m.credits}cr)`}</option>`).join('')}
+      <select id="vidModel" style="flex:2;min-width:200px" onchange="onVidModelChange()">
+        ${VIDEO_MODELS.map(m=>`<option value="${m.id}" data-sf="${m.sf||false}" data-sf-required="${m.sfRequired||false}">${m.name}${m.unlimited?' ♾️':` (${m.credits}cr)`}</option>`).join('')}
       </select>
       <select id="vidRatio">
         <option value="16:9">16:9</option>
@@ -3104,6 +3104,18 @@ Bulk (array of objects):
         <option value="720p">720p</option>
         <option value="1080p">1080p</option>
       </select>
+    </div>
+    <!-- Start image — shown when model supports sf -->
+    <div id="vidStartImageRow" style="display:none;margin-bottom:10px">
+      <label style="color:#aaa;font-size:12px;display:block;margin-bottom:4px" id="vidStartImageLabel">Start image</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="background:#2563eb;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap">
+          📁 Choose image <input type="file" id="vidStartImageFile" accept="image/*" style="display:none" onchange="onVidStartImagePick(this)">
+        </label>
+        <span id="vidStartImageName" style="color:#888;font-size:12px">No file chosen</span>
+        <button class="btn btn-sm btn-gray" id="vidStartImageClear" onclick="clearVidStartImage()" style="display:none">✕ Clear</button>
+      </div>
+      <img id="vidStartImagePreview" style="display:none;max-height:80px;max-width:160px;border-radius:4px;margin-top:6px;border:1px solid #333">
     </div>
     <label style="display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px;cursor:pointer;margin-bottom:10px">
       <input type="checkbox" id="vidSound" checked style="width:14px;height:14px"> Sound effects
@@ -3500,18 +3512,60 @@ Bulk (array of objects):
       } catch(e) { stopTimer(tid); el.innerHTML=\`<span style='color:#f87171'>Error: \${e.message}</span>\`; }
     }
 
+    let _vidStartImageB64 = null;
+    function onVidModelChange() {
+      const sel = document.getElementById('vidModel');
+      const opt = sel.options[sel.selectedIndex];
+      const sf = opt.dataset.sf === 'true';
+      const sfRequired = opt.dataset.sfRequired === 'true';
+      const row = document.getElementById('vidStartImageRow');
+      const label = document.getElementById('vidStartImageLabel');
+      if (sf) {
+        row.style.display = 'block';
+        label.textContent = sfRequired ? 'Start image (required)' : 'Start image (optional)';
+      } else {
+        row.style.display = 'none';
+        clearVidStartImage();
+      }
+    }
+    function onVidStartImagePick(input) {
+      const file = input.files[0];
+      if (!file) return;
+      document.getElementById('vidStartImageName').textContent = file.name;
+      document.getElementById('vidStartImageClear').style.display = 'inline-block';
+      const reader = new FileReader();
+      reader.onload = e => {
+        _vidStartImageB64 = e.target.result;
+        const img = document.getElementById('vidStartImagePreview');
+        img.src = _vidStartImageB64;
+        img.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    }
+    function clearVidStartImage() {
+      _vidStartImageB64 = null;
+      document.getElementById('vidStartImageFile').value = '';
+      document.getElementById('vidStartImageName').textContent = 'No file chosen';
+      document.getElementById('vidStartImageClear').style.display = 'none';
+      document.getElementById('vidStartImagePreview').style.display = 'none';
+    }
     async function testVideo() {
       const prompt=document.getElementById('vidPrompt').value.trim();
       const model=document.getElementById('vidModel').value;
       if (!prompt) return toast('Enter a prompt', false);
+      const sel=document.getElementById('vidModel');
+      const sfRequired=sel.options[sel.selectedIndex].dataset.sfRequired==='true';
+      if (sfRequired && !_vidStartImageB64) return toast('This model requires a start image', false);
       const el=document.getElementById('vidResult');
       el.innerHTML=\`⏳ Generating video with <b>\${model}</b>…\`;
       const tid=startTimer('vidResult', 90);
       try {
+        const body={prompt,model,aspect_ratio:document.getElementById('vidRatio').value,
+          duration:parseInt(document.getElementById('vidDur').value),resolution:document.getElementById('vidRes').value,
+          sound_effects:document.getElementById('vidSound').checked};
+        if (_vidStartImageB64) body.start_image = _vidStartImageB64;
         const d=await fetch('/v1/videos/generate',{method:'POST',headers:{'content-type':'application/json'},
-          body:JSON.stringify({prompt,model,aspect_ratio:document.getElementById('vidRatio').value,
-            duration:parseInt(document.getElementById('vidDur').value),resolution:document.getElementById('vidRes').value,
-            sound_effects:document.getElementById('vidSound').checked})}).then(r=>r.json());
+          body:JSON.stringify(body)}).then(r=>r.json());
         stopTimer(tid);
         if (d.data?.url) {
           const tms = d.processing_time_ms ? \` · \${(d.processing_time_ms/1000).toFixed(1)}s\` : '';
