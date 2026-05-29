@@ -52,6 +52,8 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 | `POST` | `/v1/images/generations` | API key | OpenAI-compatible image generation |
 | `POST` | `/v1/images/describe` | API key | Describe an image with AI |
 | `POST` | `/v1/images/remove-background` | API key | Remove background from image |
+| `POST` | `/v1/images/upscale` | API key | Upscale / enhance an image (2×, 4×, 8×) |
+| `POST` | `/v1/upload` | API key | Upload a local image for use with upscale |
 | `POST` | `/v1/videos/generate` | API key | Generate a video |
 | `POST` | `/v1/audio/generate` | API key | Generate speech audio (TTS) |
 | `GET` | `/v1/audio/voices` | API key | List all available voices |
@@ -232,6 +234,100 @@ Option B — base64 data URL:
 ```
 
 `result_b64` is always a transparent PNG (RGBA) encoded as a base64 data URL. Paste it directly into an `<img src>` or decode and save as `.png`.
+
+---
+
+## POST /v1/images/upscale
+
+Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8× scaling with fine-grained control over creativity, resemblance, HDR, and engine style. Costs Magnific credits.
+
+**Response time:** 30–120 seconds depending on image size and scale.
+
+### Request
+
+```json
+{
+  "image_url": "https://example.com/photo.jpg",
+  "mode": "creative",
+  "model": "magnific",
+  "scale": 2,
+  "engine": "automatic",
+  "creativity": -3,
+  "resemblance": 3,
+  "hdr": 0,
+  "fractality": 0,
+  "optimized_for": "StandardUltra",
+  "prompt": "",
+  "folder": null
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `image_url` | string | required* | Public URL of image to upscale |
+| `creation_id` | string | required* | Alternative to `image_url` — use ID from `POST /v1/upload` for local files |
+| `mode` | string | `"creative"` | `"creative"` — AI-enhanced detail \| `"precision"` — faithful upscale |
+| `model` | string | `"magnific"` | `"magnific"` \| `"classic"` |
+| `scale` | number | `2` | `2` \| `4` \| `8` |
+| `engine` | string | `"automatic"` | `"automatic"` \| `"illusio"` \| `"sharpy"` \| `"sparkle"` |
+| `creativity` | number | `-3` | `-10` to `10` — how much AI adds new detail |
+| `resemblance` | number | `3` | `-10` to `10` — how closely output matches input |
+| `hdr` | number | `0` | `-10` to `10` — dynamic range enhancement |
+| `fractality` | number | `0` | `-10` to `10` — texture complexity |
+| `optimized_for` | string | `"StandardUltra"` | Subject type hint for the model |
+| `prompt` | string | `""` | Optional text to guide creative enhancement |
+| `folder` | string | account default | Space reference UUID to save into |
+
+*One of `image_url` or `creation_id` is required.
+
+### Response
+
+```json
+{
+  "created": 1716278400,
+  "data": {
+    "url": "https://pikaso.cdnpk.net/private/production/.../upscaled.jpg",
+    "preview_url": "https://pikaso.cdnpk.net/private/production/.../preview.jpg",
+    "width": 2048,
+    "height": 2048,
+    "scale": 2,
+    "mode": "creative",
+    "model": "magnific",
+    "engine": "automatic",
+    "preset": "upscale",
+    "id": "4123456789",
+    "family": "a1b2c3d4-..."
+  },
+  "account": "whora14@gmail.com"
+}
+```
+
+---
+
+## POST /v1/upload
+
+Uploads a local image (base64) to Magnific and returns a `creation_id` for use with `POST /v1/images/upscale`. Use this when you have a local file rather than a public URL.
+
+### Request
+
+```json
+{ "image_data": "data:image/jpeg;base64,/9j/4AAQ..." }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `image_data` | string | yes | Base64 data URL (`data:image/...;base64,...`) |
+
+### Response
+
+```json
+{
+  "creation_id": "temporal:reimagine-oGeWvLFZ...jpg",
+  "account": "whora14@gmail.com"
+}
+```
+
+Pass `creation_id` directly to `POST /v1/images/upscale` instead of `image_url`.
 
 ---
 
