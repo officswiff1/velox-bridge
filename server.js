@@ -417,36 +417,44 @@ function exportAccountsJSON() {
 // ── Render env-var sync ───────────────────────────────────────────────────────
 // Persists in-memory accounts back to the ACCOUNTS_JSON env var on Render so
 // changes survive a redeploy without any manual copy-paste.
-async function syncToRender() {
+async function syncToRender(attempts = 3) {
   if (!RENDER_API_KEY || !RENDER_SERVICE_ID) return { ok: false, reason: 'RENDER_API_KEY / RENDER_SERVICE_ID not configured' };
-  try {
-    const listR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
-      headers: { Authorization: `Bearer ${RENDER_API_KEY}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!listR.ok) return { ok: false, reason: `Render list env-vars: HTTP ${listR.status}` };
-    const current = await listR.json();
-    const newJson = exportAccountsJSON();
-    const updated = current.map(ev => ({
-      key: ev.envVar.key,
-      value: ev.envVar.key === 'ACCOUNTS_JSON' ? newJson : (ev.envVar.value || ''),
-    }));
-    if (!updated.some(v => v.key === 'ACCOUNTS_JSON')) updated.push({ key: 'ACCOUNTS_JSON', value: newJson });
-    const putR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${RENDER_API_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(updated),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!putR.ok) {
-      const t = await putR.text();
-      return { ok: false, reason: `Render PUT: HTTP ${putR.status} — ${t.slice(0,120)}` };
+  let lastReason = '';
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const listR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
+        headers: { Authorization: `Bearer ${RENDER_API_KEY}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!listR.ok) { lastReason = `Render list env-vars: HTTP ${listR.status}`; throw new Error(lastReason); }
+      const current = await listR.json();
+      const newJson = exportAccountsJSON();
+      const updated = current.map(ev => ({
+        key: ev.envVar.key,
+        value: ev.envVar.key === 'ACCOUNTS_JSON' ? newJson : (ev.envVar.value || ''),
+      }));
+      if (!updated.some(v => v.key === 'ACCOUNTS_JSON')) updated.push({ key: 'ACCOUNTS_JSON', value: newJson });
+      const putR = await fetch(`https://api.render.com/v1/services/${RENDER_SERVICE_ID}/env-vars`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${RENDER_API_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(updated),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!putR.ok) {
+        const t = await putR.text();
+        lastReason = `Render PUT: HTTP ${putR.status} — ${t.slice(0, 120)}`;
+        throw new Error(lastReason);
+      }
+      addLog('INFO', `Accounts synced to Render (${manager.accounts.length} account(s))${attempt > 1 ? ` [attempt ${attempt}]` : ''}`);
+      return { ok: true, accounts: manager.accounts.length };
+    } catch (e) {
+      lastReason = lastReason || e.message;
+      addLog('WARN', `syncToRender attempt ${attempt}/${attempts} failed: ${lastReason}`);
+      if (attempt < attempts) await new Promise(r => setTimeout(r, 2000 * attempt));
     }
-    addLog('INFO', `Accounts synced to Render (${manager.accounts.length} account(s))`);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: e.message };
   }
+  addLog('ERROR', `syncToRender FAILED after ${attempts} attempts — accounts may be lost on next deploy! Reason: ${lastReason}`);
+  return { ok: false, reason: lastReason };
 }
 
 // ── Per-account concurrency semaphore ────────────────────────────────────────
@@ -2991,6 +2999,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
           <button class="btn btn-sm btn-gray" onclick="checkAccount('${encodeURIComponent(a.name)}',this)">Check</button>
           <button class="btn btn-sm btn-warn" onclick="toggleAccount('${encodeURIComponent(a.name)}',this)">${a.status==='active'?'Disable':'Enable'}</button>
           <button class="btn btn-sm btn-green" onclick="toggleEditAccount('${encodeURIComponent(a.name)}')">Edit</button>
+          <button class="btn btn-sm" style="background:#6366f1" onclick="copyCookies('${encodeURIComponent(a.name)}',this)" title="Copy cookie string to clipboard">Copy Cookies</button>
           <button class="btn btn-sm btn-danger" onclick="removeAccount('${encodeURIComponent(a.name)}')">Remove</button>
         </div>
         <div id="edit-${encodeURIComponent(a.name)}" style="display:none;margin-top:10px;padding:10px;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:7px">
@@ -3317,13 +3326,41 @@ Bulk (array of objects):
           method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body),
         }).then(r=>r.json());
         if (d.ok) {
-          const syncMsg = d.synced ? ' · <span style="color:#4ade80">✓ Synced to Render</span>' : (d.sync_error ? \` · <span style="color:#facc15">⚠ Sync: \${d.sync_error}</span>\` : '');
-          resEl.innerHTML = \`<span style="color:#4ade80">✅ Added\${d.added>1?' '+d.added+' accounts':''}\${syncMsg}</span>\`;
-          setTimeout(()=>location.reload(), 1800);
+          if (d.synced) {
+            resEl.innerHTML = \`<span style="color:#4ade80">✅ Added \${d.added||1} account(s) · ✓ Synced to Render (\${d.accounts} total saved)</span>\`;
+            setTimeout(()=>location.reload(), 1800);
+          } else {
+            // Sync failed — account is in memory but NOT saved to Render
+            // Do NOT auto-reload — user must see this warning and act
+            resEl.innerHTML = \`<div style="background:#7f1d1d;border:2px solid #ef4444;border-radius:8px;padding:12px;margin-top:8px">
+              <div style="color:#fca5a5;font-weight:700;font-size:14px;margin-bottom:6px">⚠️ ACCOUNT ADDED IN MEMORY BUT NOT SAVED TO RENDER</div>
+              <div style="color:#fca5a5;font-size:12px;margin-bottom:8px">If the server restarts (deploy), this account will be LOST. Reason: \${d.sync_error||'unknown'}</div>
+              <button class="btn" style="background:#ef4444;font-size:12px" onclick="retrySyncAfterAdd(this)">↻ Retry Sync Now</button>
+              <span id="retrySyncResult" style="font-size:11px;margin-left:8px;color:#fca5a5"></span>
+            </div>\`;
+          }
         } else {
           resEl.innerHTML = \`<span style="color:#f87171">❌ \${d.error||'Failed'}</span>\`;
         }
       } catch(e) { resEl.innerHTML = \`<span style="color:#f87171">Error: \${e.message}</span>\`; }
+    }
+
+    async function retrySyncAfterAdd(btn) {
+      btn.disabled = true; btn.textContent = '↻ Retrying…';
+      const resultEl = document.getElementById('retrySyncResult');
+      try {
+        const d = await fetch('/manage/sync', {method:'POST'}).then(r=>r.json());
+        if (d.ok) {
+          resultEl.innerHTML = '<span style="color:#4ade80">✓ Synced! Reloading…</span>';
+          setTimeout(()=>location.reload(), 1500);
+        } else {
+          resultEl.innerHTML = \`<span style="color:#fca5a5">Still failed: \${d.error}</span>\`;
+          btn.disabled = false; btn.textContent = '↻ Retry Sync Now';
+        }
+      } catch(e) {
+        resultEl.innerHTML = \`<span style="color:#fca5a5">Error: \${e.message}</span>\`;
+        btn.disabled = false; btn.textContent = '↻ Retry Sync Now';
+      }
     }
 
     async function syncAccounts(btn) {
@@ -3373,6 +3410,20 @@ Bulk (array of objects):
       const d = await r.json();
       if (d.ok) { toast('Removed!'); setTimeout(()=>location.reload(), 1000); }
       else toast(d.error||'Failed', false);
+    }
+
+    async function copyCookies(encoded, btn) {
+      const name = decodeURIComponent(encoded);
+      const r = await fetch('/manage/cookies', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({name})});
+      const d = await r.json();
+      if (!d.ok) { toast(d.error||'Failed', false); return; }
+      try {
+        await navigator.clipboard.writeText(d.cookieString);
+        const orig = btn.textContent; btn.textContent='Copied!'; btn.style.background='#4ade80'; btn.style.color='#000';
+        setTimeout(()=>{ btn.textContent=orig; btn.style.background=''; btn.style.color=''; }, 2000);
+      } catch {
+        prompt('Copy cookie string:', d.cookieString);
+      }
     }
 
     function toggleEditAccount(encoded) {
@@ -3887,6 +3938,14 @@ app.post("/manage/update", adminAuthMiddleware, express.json(), async (req, res)
   addLog('INFO', `Account updated: ${name} (video=${acc.video}, override=true)`);
   const sync = await syncToRender();
   return res.json({ ok: true, synced: sync.ok, sync_error: sync.ok ? undefined : sync.reason });
+});
+
+// ── POST /manage/cookies ─────────────────────────────────────────────────────
+app.post("/manage/cookies", adminAuthMiddleware, express.json(), (req, res) => {
+  const { name } = req.body || {};
+  const acc = manager.accounts.find(a => a.name === name);
+  if (!acc) return res.json({ ok: false, error: "Account not found" });
+  res.json({ ok: true, cookieString: acc.cookieString });
 });
 
 // ── POST /manage/sync ─────────────────────────────────────────────────────────
