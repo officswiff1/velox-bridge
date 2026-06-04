@@ -803,10 +803,12 @@ async function refreshSession(acc, page = 'ai-image-generator') {
     if (refreshed) {
       addLog("INFO", `[${acc.name}] Session refreshed from Set-Cookie (page=${page})`);
     } else {
-      addLog("WARN", `[${acc.name}] Session refresh got no new cookies (page=${page} status=${r.status})`);
+      addLog("WARN", `[${acc.name}] Session refresh got no new cookies (page=${page} status=${r.status}) — session may be dead`);
     }
+    return { alive: r.status === 200, refreshed, finalStatus: r.status };
   } catch (e) {
     addLog("WARN", `[${acc.name}] Session refresh failed: ${e.message}`);
+    return { alive: false, refreshed: false, finalStatus: 0 };
   }
 }
 
@@ -1994,7 +1996,20 @@ const PLAN_CHECK_INTERVAL_MS = 3600000; // re-check every 1 hour
 
 async function checkAccountPlan(acc) {
   // Refresh session first so GR_TOKEN is fresh — plan API rejects expired tokens
-  try { await refreshSession(acc, 'ai-image-generator'); } catch {}
+  let sessionAlive = true;
+  try {
+    const rs = await refreshSession(acc, 'ai-image-generator');
+    if (rs) sessionAlive = rs.alive;
+  } catch {}
+
+  // If session page returned non-200 (redirect to login), session is truly dead
+  if (!sessionAlive) {
+    acc.status = 'inactive';
+    acc.planStatus = 'expired';
+    acc.planCheckedAt = Date.now();
+    addLog('WARN', `[${acc.name}] Auto-deactivated — session dead (page load returned non-200, cookies likely expired)`);
+    return;
+  }
 
   const planHeaders = {
     'accept': '*/*',
@@ -2022,12 +2037,13 @@ async function checkAccountPlan(acc) {
         acc.planCheckedAt = Date.now();
         return;
       }
-      // Plan API 401/403 means the subscription info is inaccessible — but the
-      // magnific_session may still be valid for generation (e.g. expired plan holders).
-      // Keep active; if the session is truly dead, generation will 401 and
-      // tryWithRotation will deactivate it then.
-      acc.planStatus = 'expired'; acc.planCheckedAt = Date.now();
-      addLog('WARN', `[${acc.name}] Plan check returned ${r1.status} — marking plan expired but keeping active (session may still work for unlimited models)`);
+      // Plan API 401/403 with a live session = subscription expired/inaccessible
+      // but magnific_session is still valid for generation (unlimited models work).
+      // Keep active; if generation later fails with 401, tryWithRotation deactivates.
+      acc.planStatus = 'expired';
+      acc.plan = acc.plan || 'Expired';
+      acc.planCheckedAt = Date.now();
+      addLog('WARN', `[${acc.name}] Plan check returned ${r1.status} — subscription inaccessible but session alive, keeping active`);
       return;
     }
 
@@ -2048,7 +2064,9 @@ async function checkAccountPlan(acc) {
     try { data = await r1.json(); } catch { addLog('WARN', `[${acc.name}] Plan check: invalid JSON`); return; }
 
     if (!data.billing) {
-      acc.planStatus = 'expired'; acc.planCheckedAt = Date.now();
+      acc.planStatus = 'expired';
+      acc.plan = acc.plan || 'Expired';
+      acc.planCheckedAt = Date.now();
       addLog('WARN', `[${acc.name}] Plan check: no billing data — marking expired but keeping active`);
       return;
     }
@@ -2955,7 +2973,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
           </div>
           <div>
             <div style="font-size:9px;color:#555;margin-bottom:1px">PLAN</div>
-            <div style="font-size:12px;font-weight:600" class="plan-${a.planStatus||'unknown'}">${a.plan||(a.planCheckedAt?'—':'…')}${a.isTrial?' 🆕':''}</div>
+            <div style="font-size:12px;font-weight:600" class="plan-${a.planStatus||'unknown'}">${a.plan||(a.planStatus==='expired'?'Expired':a.planCheckedAt?'—':'…')}${a.isTrial?' 🆕':''}</div>
             ${a.planExpiry?`<div style="font-size:9px;color:#555">↻ ${a.planExpiry}</div>`:''}
           </div>
           ${a.credits!=null?`<div>
