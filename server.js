@@ -1952,10 +1952,12 @@ async function tryWithRotation(pool, tag, fn) {
 }
 
 async function generateVideoWithRotation(params) {
-  let pool = manager.getPool(a => a.video, 'rrVideoIndex');
+  // All active accounts are eligible — video flag no longer gates the pool.
+  // Credit routing below handles skipping zero-credit accounts for paid models.
+  let pool = manager.getPool(a => a.status === 'active', 'rrVideoIndex');
   if (!pool.length) {
     throw Object.assign(
-      new Error('No video-capable accounts available. Add an account with credits or set "# video: true" in an account file.'),
+      new Error('No active accounts available for video generation.'),
       { status: 503 }
     );
   }
@@ -2146,18 +2148,9 @@ async function checkAccountPlan(acc) {
       addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan, no generation access`);
     }
 
-    // Auto-enable/disable video based on credit balance.
-    // Skipped if user manually set video via Edit — videoOverride=true takes precedence.
-    // Minimum 44 credits needed for the cheapest credit-based video model (Seedance 2.0 Fast).
-    const MIN_VIDEO_CREDITS = Math.min(...VIDEO_MODELS.filter(m => !m.unlimited && m.credits > 0).map(m => m.credits));
-    if (acc.credits != null && !acc.videoOverride) {
-      const hadVideo = acc.video;
-      acc.video = acc.credits >= MIN_VIDEO_CREDITS;
-      if (acc.video && !hadVideo)
-        addLog('INFO', `[${acc.name}] Video auto-enabled — ${acc.credits.toLocaleString()} credits available`);
-      else if (!acc.video && hadVideo)
-        addLog('WARN', `[${acc.name}] Video auto-disabled — insufficient credits (${acc.credits} < ${MIN_VIDEO_CREDITS} needed)`);
-    }
+    // Video flag is no longer auto-managed by credit balance.
+    // All active accounts join the video pool; credit routing in generateVideoWithRotation
+    // handles skipping zero-credit accounts per-model at request time.
   } catch (e) {
     addLog('WARN', `[${acc.name}] Plan check error: ${e.message}`);
   }
