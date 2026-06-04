@@ -353,7 +353,7 @@ function parseAccountFromObj(obj) {
     grToken,
     grTokenExpiry: getTokenExpiry(grToken),
     status: obj.status || "active",
-    video: obj.video || false,
+    video: obj.video ?? true,
     videoOverride: obj.videoOverride || false,
     email: obj.email || obj.name || "",
   };
@@ -2945,7 +2945,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
     `<div class="acc-grid">${accounts.map(a => `
       <div class="acc-card">
         <div class="acc-name" title="${a.email}">${a.email}</div>
-        <div class="meta">uid: ${a.userId||'—'}${a.video?' · 📹 video':''}</div>
+        <div class="meta">uid: ${a.userId||'—'}${a.status==='active'?' · 📹 video':''}</div>
         <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
           <div>
             <div style="font-size:9px;color:#555;margin-bottom:1px">STATUS</div>
