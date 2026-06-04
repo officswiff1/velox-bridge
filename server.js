@@ -1952,13 +1952,30 @@ async function tryWithRotation(pool, tag, fn) {
 }
 
 async function generateVideoWithRotation(params) {
-  const pool = manager.getPool(a => a.video, 'rrVideoIndex');
+  let pool = manager.getPool(a => a.video, 'rrVideoIndex');
   if (!pool.length) {
     throw Object.assign(
       new Error('No video-capable accounts available. Add an account with credits or set "# video: true" in an account file.'),
       { status: 503 }
     );
   }
+
+  // For credit-based video models, skip accounts with insufficient credits.
+  const vm = VIDEO_MODELS.find(m => m.id === params.model);
+  const creditCost = vm?.credits || 0;
+  if (!vm?.unlimited && creditCost > 0) {
+    const creditPool = pool.filter(a =>
+      a.planCheckedAt == null ||
+      (a.credits != null && a.credits >= creditCost)
+    );
+    if (creditPool.length > 0) {
+      pool = creditPool;
+      addLog('INFO', `Video credit model "${params.model}" (${creditCost}cr) — routing to ${pool.map(a => a.name).join(', ')}`);
+    } else {
+      addLog('WARN', `Video credit model "${params.model}" (${creditCost}cr) — no account has enough credits, trying all`);
+    }
+  }
+
   return tryWithRotation(pool, 'video', async acc => {
     addLog('INFO', `Video generating — account=${acc.name}`, { prompt: params.prompt?.slice(0, 80) });
     const video = await generateVideo(acc, params);
@@ -2731,6 +2748,8 @@ app.get('/v1/accounts/plans', auth, (req, res) => {
     planFrequency: a.planFrequency || null,
     purchaseStatus: a.purchaseStatus || null,
     planCheckedAt: a.planCheckedAt ? new Date(a.planCheckedAt).toISOString() : null,
+    video:         a.video         ?? null,
+    videoOverride: a.videoOverride ?? null,
   })));
 });
 
