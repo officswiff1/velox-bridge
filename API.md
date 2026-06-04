@@ -939,21 +939,130 @@ All audio models cost **5 credits per generation**.
 
 ## Error Responses
 
-All errors return JSON with an `error` field and appropriate HTTP status.
+All errors return JSON. For async jobs, check the `error` field on the job object (not the HTTP response).
 
 ```json
-{ "error": "Prompt is required" }
+{ "error": "Specific reason here" }
 ```
 
-| HTTP Status | Meaning |
-|---|---|
-| `202` | Job accepted — body contains `job_id`, poll `/v1/jobs/:id` for result |
-| `400` | Bad request — missing or invalid parameters |
-| `401` | Invalid or missing API key |
-| `404` | Job not found or expired (jobs last 2 hours) |
-| `429` | All accounts busy — retry after a moment or add more accounts |
-| `500` | Server error — check `/logs` for details |
-| `503` | No active accounts available |
+### HTTP Status Codes
+
+| HTTP | When | Meaning |
+|---|---|---|
+| `202` | Submit | Job accepted — poll `/v1/jobs/:id` |
+| `400` | Submit | Bad request — missing/invalid params (e.g. `start_image` required, unknown model) |
+| `401` | Any | Invalid or missing API key |
+| `402` | Job result | Insufficient credits — see credit errors below |
+| `404` | Poll | Job not found or expired (jobs live 2 hours) |
+| `429` | Submit | All account slots busy — retry in a moment, or add more accounts |
+| `500` | Job result | Server error or Magnific generation error |
+| `503` | Submit | No active accounts available |
+
+---
+
+### Image Errors
+
+**Insufficient credits (HTTP 402):**
+```json
+{ "error": "Not enough credits for model \"gpt-medium\" — check your account balance" }
+```
+Returned when the model costs credits and no account has enough. The server checks credits **before** calling Magnific — no wasted request.
+
+**Bad model ID:**
+```json
+{ "error": "Unknown model \"gpt-xyz\". Call GET /v1/models to see available models." }
+```
+
+**Missing prompt:**
+```json
+{ "error": "prompt is required" }
+```
+
+---
+
+### Video Errors
+
+**Insufficient credits — pre-check fires before any Magnific request (HTTP 402):**
+```json
+{
+  "error": "Insufficient credits for model \"openai-sora2-pro\" — requires 1800 credits, highest available: 291511. Top up an account or use an unlimited model like kling-25."
+}
+```
+Returned immediately when all plan-checked accounts are confirmed under the credit threshold.
+
+**Model temporarily unavailable (errorCode 500001, account has credits):**
+```json
+{ "error": "Video generation failed: Model \"bytedance-seedance-fast-2.0\" is temporarily unavailable or at capacity — try again in a few minutes" }
+```
+
+**Insufficient credits detected after queueing (errorCode 500001, no credits):**
+```json
+{ "error": "Video generation failed: Insufficient credits for model \"bytedance-seedance-fast-2.0\" (requires 44 credits)" }
+```
+
+**Model not available on account plan (e.g. Sora requires enterprise):**
+```json
+{ "error": "Video generation failed: Generation failed (errorCode invalid_value)" }
+```
+
+**start_image required but not provided:**
+```json
+{ "error": "Model \"minimax-video-2_3-fast\" requires start_image" }
+```
+
+**start_image provided to model that doesn't support it:**
+```json
+{ "error": "Model \"bytedance-seedance-fast-2.0\" does not support end_image" }
+```
+
+**Timed out (10 min server-side poll exceeded):**
+```json
+{ "error": "Video generation timed out after 10 minutes" }
+```
+
+---
+
+### Audio Errors
+
+**Insufficient credits (HTTP 402):**
+```json
+{ "error": "Insufficient credits for audio generation — all audio models cost 5 credits per request. Top up an account with audio credits." }
+```
+
+**Plan doesn't include voiceover feature:**
+```json
+{ "error": "Audio generation not available on this account's plan — voiceover feature required" }
+```
+
+**Auth failure (session expired):**
+```json
+{ "error": "Auth failed — session expired" }
+```
+
+**Timed out:**
+```json
+{ "error": "Audio generation timed out after 5 minutes" }
+```
+
+---
+
+### General Errors
+
+**All accounts tried and all failed:**
+```json
+{ "error": "Insufficient credits for model \"gpt-high\" — requires 500 credits, highest available: 0. ..." }
+```
+The actual underlying last error is propagated — not just "all accounts failed".
+
+**No active accounts:**
+```json
+{ "error": "No active accounts available for video generation." }
+```
+
+**Account slots all busy:**
+```json
+{ "error": "Server busy — all 3 account(s) at capacity (60 total slots). Add more accounts to increase throughput." }
+```
 
 ---
 
