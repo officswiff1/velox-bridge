@@ -2022,9 +2022,12 @@ async function checkAccountPlan(acc) {
         acc.planCheckedAt = Date.now();
         return;
       }
+      // Plan API 401/403 means the subscription info is inaccessible — but the
+      // magnific_session may still be valid for generation (e.g. expired plan holders).
+      // Keep active; if the session is truly dead, generation will 401 and
+      // tryWithRotation will deactivate it then.
       acc.planStatus = 'expired'; acc.planCheckedAt = Date.now();
-      acc.status = 'inactive';
-      addLog('WARN', `[${acc.name}] Auto-deactivated — session expired (HTTP ${r1.status})`);
+      addLog('WARN', `[${acc.name}] Plan check returned ${r1.status} — marking plan expired but keeping active (session may still work for unlimited models)`);
       return;
     }
 
@@ -2046,8 +2049,7 @@ async function checkAccountPlan(acc) {
 
     if (!data.billing) {
       acc.planStatus = 'expired'; acc.planCheckedAt = Date.now();
-      acc.status = 'inactive';
-      addLog('WARN', `[${acc.name}] Auto-deactivated — no billing data (session likely expired)`);
+      addLog('WARN', `[${acc.name}] Plan check: no billing data — marking expired but keeping active`);
       return;
     }
 
