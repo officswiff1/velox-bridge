@@ -20,26 +20,48 @@ If `API_SECRET` is empty (not set on the server), all requests pass through with
 
 ---
 
+## How the API Works — Async Job System
+
+All generation endpoints (`/v1/images/generate`, `/v1/videos/generate`, `/v1/audio/generate`) use an **async job system**. You submit a request and get back a `job_id` **instantly** (< 1 second). Then you poll `GET /v1/jobs/:id` until the job is `completed` or `failed`.
+
+```
+Submit → job_id returned immediately (HTTP 202)
+Poll every N seconds → status: queued → processing → completed
+Completed → result contains the CDN URL
+```
+
+**Why async?**
+- Video takes 1–5 minutes — holding an HTTP connection that long breaks mobile clients, Vercel, Cloudflare Workers, etc.
+- Multiple jobs can run in parallel without blocking your client
+- If network drops, the job keeps running — just re-poll with the same `job_id`
+
+**Legacy sync mode** (backward compatible): Add `?wait=true` to any generation request to get the old blocking behaviour (connection held open until done). Useful for simple scripts and testing.
+
+---
+
 ## Quick Start
 
 ```bash
-# Generate an image
-curl -X POST https://freepik-api-qg08.onrender.com/v1/images/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "a futuristic city at night", "model": "flux-2", "aspect_ratio": "16:9"}'
-
-# Generate a video
+# Step 1 — Submit a video job (returns instantly)
 curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
   -H "X-API-Key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "a wave crashing on a rocky shore", "model": "kling-25", "aspect_ratio": "16:9"}'
+  -d '{"prompt": "a wave crashing on a rocky shore", "model": "kling-25"}'
+# → {"job_id":"job_abc123","status":"queued","retry_after":10,"poll_url":"/v1/jobs/job_abc123"}
 
-# Generate speech audio
+# Step 2 — Poll for result (repeat every retry_after seconds)
+curl https://freepik-api-qg08.onrender.com/v1/jobs/job_abc123 \
+  -H "X-API-Key: YOUR_KEY"
+# → {"status":"completed","result":{"url":"https://pikaso.cdnpk.net/...",...}}
+
+# Images and audio work the same way
+curl -X POST https://freepik-api-qg08.onrender.com/v1/images/generate \
+  -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"prompt": "a futuristic city at night", "model": "flux-2"}'
+
 curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hello, this is a test.", "voice": "A-Xee", "model": "eleven_v3"}'
+  -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"text": "Hello world", "model": "eleven_v3"}'
 ```
 
 ---
@@ -48,30 +70,34 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/v1/images/generate` | API key | Generate images |
-| `POST` | `/v1/images/generations` | API key | OpenAI-compatible image generation |
-| `POST` | `/v1/images/describe` | API key | Describe an image with AI |
-| `POST` | `/v1/images/remove-background` | API key | Remove background from image |
-| `POST` | `/v1/images/upscale` | API key | Upscale / enhance an image (2×, 4×, 8×) |
-| `POST` | `/v1/upload` | API key | Upload a local image for use with upscale |
-| `POST` | `/v1/videos/generate` | API key | Generate a video |
-| `POST` | `/v1/audio/generate` | API key | Generate speech audio (TTS) |
-| `GET` | `/v1/audio/voices` | API key | List all available voices |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/v1/images/generate` | API key | Submit image job → `job_id` (async) |
+| `POST` | `/v1/videos/generate` | API key | Submit video job → `job_id` (async) |
+| `POST` | `/v1/audio/generate` | API key | Submit audio job → `job_id` (async) |
+| `GET` | `/v1/jobs/:id` | API key | Poll job status and get result |
+| `GET` | `/v1/jobs` | API key | List last 100 jobs |
+| `POST` | `/v1/images/generations` | API key | OpenAI-compatible image generation (sync) |
+| `POST` | `/v1/images/describe` | API key | Describe an image with AI (sync) |
+| `POST` | `/v1/images/remove-background` | API key | Remove background from image (sync) |
+| `POST` | `/v1/images/upscale` | API key | Upscale / enhance an image (sync) |
+| `POST` | `/v1/upload` | API key | Upload local image for upscale |
+| `GET` | `/v1/audio/voices` | API key | List all voices |
 | `GET` | `/v1/audio/voices/:id/preview` | API key | Get voice preview sample URL |
 | `GET` | `/v1/models` | none | List all available models |
 | `POST` | `/v1/spaces` | API key | Create a folder/space |
 | `GET` | `/v1/accounts/plans` | API key | View account plan and credit status |
-| `POST` | `/v1/accounts/plans/refresh` | API key | Force re-check all account plans |
-| `GET` | `/health` | none | Server status and capacity |
+| `POST` | `/v1/accounts/plans/refresh` | API key | Trigger immediate plan re-check |
+| `GET` | `/health` | none | Server status and live capacity |
 | `GET` | `/logs` | none | Recent server logs |
 
 ---
 
 ## POST /v1/images/generate
 
-Generates one or more images from a text prompt. This is the main image generation endpoint. All generated images are automatically deleted from the Magnific account after the CDN URL is returned — the URL itself remains valid for ~24 hours.
+Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). Poll `GET /v1/jobs/:id` for the result. Add `?wait=true` for legacy sync mode.
 
-**Generation time:** 5–30 seconds depending on model and load.
+**Typical job time:** 5–30 seconds.
 
 ### Request
 
@@ -89,41 +115,54 @@ Generates one or more images from a text prompt. This is the main image generati
 | Field | Type | Default | Required | Description |
 |---|---|---|---|---|
 | `prompt` | string | — | ✅ | Text description of the image |
-| `model` | string | `"auto"` | | Model ID — see [Image Models](#image-models) below |
+| `model` | string | `"auto"` | | Model ID — see [Image Models](#image-models) |
 | `num_images` | number | `1` | | Number of images to generate (1–4) |
 | `aspect_ratio` | string | `"1:1"` | | `"1:1"` `"16:9"` `"9:16"` `"4:3"` `"3:4"` `"3:2"` `"2:3"` |
 | `variations` | boolean | `false` | | Generate creative prompt variations |
 | `folder` | string | account default | | Space UUID — saves images into that folder |
 
-### Response
+### Response (async — HTTP 202)
+
+```json
+{
+  "job_id": "job_28363f9b904cbef7e857",
+  "status": "queued",
+  "retry_after": 3,
+  "poll_url": "/v1/jobs/job_28363f9b904cbef7e857"
+}
+```
+
+Poll `GET /v1/jobs/:id` every `retry_after` seconds. When `status` is `completed`, the `result` contains:
+
+```json
+{
+  "status": "completed",
+  "result": {
+    "images": [
+      {
+        "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.png?exp=...&hmac=...",
+        "preview_url": "...",
+        "revised_prompt": "a crisp red apple resting on a rustic wooden table...",
+        "width": 1024, "height": 1024, "mode": "flux-2", "seed": "275022",
+        "id": "KjXMRaNkqp", "family": "a1f15323-..."
+      }
+    ]
+  },
+  "account": "info@eleventhspace.com",
+  "processing_time_ms": 11841
+}
+```
+
+### Response (sync — `?wait=true`)
 
 ```json
 {
   "created": 1716278400,
-  "data": [
-    {
-      "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.png?exp=...&hmac=...",
-      "revised_prompt": "a crisp red apple resting on a rustic wooden table...",
-      "model": "flux-2",
-      "family": "a1d342d4-a543-4625-8a1d-afec8cc6fd3e",
-      "width": 1024,
-      "height": 576,
-      "aspect_ratio": "1:1"
-    }
-  ],
-  "account": "whora14@gmail.com",
-  "processing_time_ms": 8420
+  "processing_time_ms": 11841,
+  "data": [{ "url": "https://pikaso.cdnpk.net/...", "revised_prompt": "...", "width": 1024, "height": 1024, "mode": "flux-2" }],
+  "account": "info@eleventhspace.com"
 }
 ```
-
-| Field | Description |
-|---|---|
-| `data[].url` | CDN URL of the generated image — expires ~24h |
-| `data[].revised_prompt` | The prompt as actually sent to the model (may differ from your input) |
-| `data[].model` | Model ID used |
-| `data[].family` | Internal generation batch UUID |
-| `processing_time_ms` | Total server-side processing time in milliseconds |
-| `account` | Which account processed the request |
 
 ### Aspect Ratio → Output Dimensions
 
@@ -331,9 +370,59 @@ Pass `creation_id` directly to `POST /v1/images/upscale` instead of `image_url`.
 
 ---
 
+## GET /v1/jobs/:id
+
+Poll a job for its current status. Call this after submitting any generation request.
+
+```
+GET /v1/jobs/job_28363f9b904cbef7e857
+```
+
+### Response
+
+```json
+{
+  "id": "job_28363f9b904cbef7e857",
+  "type": "image",
+  "status": "completed",
+  "model": "flux-2",
+  "prompt": "a red apple on a wooden table",
+  "result": { ... },
+  "error": null,
+  "account": "info@eleventhspace.com",
+  "processing_time_ms": 11841,
+  "created_at": 1780578537609,
+  "updated_at": 1780578549452
+}
+```
+
+| Field | Description |
+|---|---|
+| `status` | `"queued"` → `"processing"` → `"completed"` \| `"failed"` |
+| `retry_after` | Seconds to wait before polling again (only on queued/processing) |
+| `result` | Generation result — shape depends on `type` (see each endpoint's response) |
+| `error` | Error message if `status === "failed"` |
+| `processing_time_ms` | Total time from submission to completion |
+
+**Jobs expire after 2 hours.** Returns `404` after expiry.
+
+---
+
+## GET /v1/jobs
+
+List the last 100 jobs (all types, most recent first).
+
+```json
+{ "jobs": [...], "total": 12 }
+```
+
+---
+
 ## POST /v1/videos/generate
 
-Generates a video from a text prompt (and optionally a start/end image). Polls internally until complete — the request stays open. All generated videos are auto-deleted from the account after the URL is captured.
+Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). Poll `GET /v1/jobs/:id` every 10 seconds for the result. Add `?wait=true` for legacy sync (connection held open, 10 min timeout).
+
+**Typical job time:** 1–5 minutes depending on model.
 
 **Generation time:** 2–10 minutes depending on model. Use a long HTTP timeout (15+ minutes) or implement async retry on your client.
 
@@ -368,38 +457,37 @@ Generates a video from a text prompt (and optionally a start/end image). Polls i
 | `prompt_mode` | string | `"manual"` | | `"manual"` = use prompt exactly, `"auto"` = model re-interprets |
 | `folder` | string | account default | | Folder UUID — saves video into that space |
 
-### Response
+### Response (async — HTTP 202)
+
+```json
+{ "job_id": "job_130704fa0511ab2f8c6c", "status": "queued", "retry_after": 10, "poll_url": "/v1/jobs/job_130704fa0511ab2f8c6c" }
+```
+
+When `status === "completed"`, `result` contains:
 
 ```json
 {
-  "created": 1716278400,
-  "data": {
-    "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.mp4?exp=...&hmac=...",
-    "prompt": "a golden retriever running on a beach at sunset",
-    "model": "kling-25",
-    "slug": "kling-25",
-    "duration": 5,
-    "aspect_ratio": "16:9",
-    "resolution": "720p",
-    "identifier": "01974...",
-    "id": "01974..."
-  },
-  "account": "visualstudsales@gmail.com",
-  "processing_time_ms": 142800
+  "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.mp4?exp=...&hmac=...",
+  "prompt": "a dog running in a park",
+  "model": "kling-25",
+  "slug": "kling-25",
+  "duration": 5,
+  "aspect_ratio": "16:9",
+  "resolution": "720p",
+  "identifier": "ubTn4izQLD",
+  "id": "3095654142"
 }
 ```
 
-`data.url` is a CDN MP4 link that expires ~24h after generation.
-
-> **Account routing:** All active accounts are eligible for video generation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `wan-2-2`, etc.) any active account is used. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the server automatically routes only to accounts with sufficient credits — zero-credit accounts are skipped. If no account has enough credits, the request fails with a clear error.
+> **Account routing:** All active accounts are eligible for video generation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `wan-2-2`, etc.) any active account is used. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the server automatically routes only to accounts with sufficient credits — zero-credit accounts are skipped.
 
 ---
 
 ## POST /v1/audio/generate
 
-Generates speech audio from text (TTS) using ElevenLabs or Google voices. Audio is auto-deleted from the account after the CDN URL is returned.
+Submits an audio (TTS) generation job. Returns `job_id` immediately. Poll `GET /v1/jobs/:id` every 5 seconds.
 
-**Generation time:** 5–30 seconds.
+**Typical job time:** 5–15 seconds.
 
 ### Request
 
@@ -427,29 +515,30 @@ Generates speech audio from text (TTS) using ElevenLabs or Google voices. Audio 
 
 ### Response
 
+### Response (async — HTTP 202)
+
+```json
+{ "job_id": "job_bc9cea05e1fba74c285c", "status": "queued", "retry_after": 5, "poll_url": "/v1/jobs/job_bc9cea05e1fba74c285c" }
+```
+
+When completed, `result` contains:
+
 ```json
 {
-  "created": 1716278400,
-  "data": {
-    "url": "https://pikaso.cdnpk.net/private/production/xxx/audio.mp3?token=...",
-    "text": "Hello, this is a test of the text-to-speech system.",
-    "model": "eleven_v3",
-    "voice": "A-Xee",
-    "voice_id": "kD4dEWy2fbcyXlge6iHh",
-    "duration": 4,
-    "identifier": "EqzyeEJuuO",
-    "id": "3023561766"
-  },
-  "account": "visualstudsales@gmail.com",
-  "processing_time_ms": 7300
+  "url": "https://pikaso.cdnpk.net/private/production/xxx/audio.mp3?token=...",
+  "text": "Hello, this is a test of the async audio API.",
+  "model": "eleven_v3",
+  "voice": "Antara Bose",
+  "voice_id": "FDQcYNtvPtQjNlTyU3du",
+  "duration": 4,
+  "identifier": "LUmBYLMswO",
+  "id": "3095656150"
 }
 ```
 
-- ElevenLabs output: `.mp3`
-- Google TTS output: `.wav`
+- ElevenLabs output: `.mp3` · Google TTS output: `.wav`
 - CDN URL expires ~24h
-
-> **Important:** All audio models cost 5 credits per generation. Accounts without audio credits will fail with `INSUFFICIENT_CREDITS`.
+- All audio models cost 5 Magnific credits per generation
 
 ---
 
@@ -858,9 +947,11 @@ All errors return JSON with an `error` field and appropriate HTTP status.
 
 | HTTP Status | Meaning |
 |---|---|
+| `202` | Job accepted — body contains `job_id`, poll `/v1/jobs/:id` for result |
 | `400` | Bad request — missing or invalid parameters |
 | `401` | Invalid or missing API key |
-| `429` | All accounts are busy or rate limited — retry after a moment, or add more accounts |
+| `404` | Job not found or expired (jobs last 2 hours) |
+| `429` | All accounts busy — retry after a moment or add more accounts |
 | `500` | Server error — check `/logs` for details |
 | `503` | No active accounts available |
 
@@ -890,127 +981,142 @@ Check live capacity at `GET /health`.
 
 ## Code Examples
 
-### JavaScript / Node.js
+### JavaScript / Node.js (async — recommended)
 
 ```js
 const BASE = 'https://freepik-api-qg08.onrender.com';
 const KEY = 'your_api_key';
+const HEADERS = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 
-async function generateImage(prompt, model = 'flux-2') {
-  const res = await fetch(`${BASE}/v1/images/generate`, {
-    method: 'POST',
-    headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, model, aspect_ratio: '16:9' }),
-  });
-  const data = await res.json();
-  return data.data[0].url; // CDN image URL
+// Generic job poller — works for image, video, and audio
+async function pollJob(jobId, intervalMs = 5000, timeoutMs = 600000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, intervalMs));
+    const res = await fetch(`${BASE}/v1/jobs/${jobId}`, { headers: HEADERS });
+    const job = await res.json();
+    if (job.status === 'completed') return job.result;
+    if (job.status === 'failed') throw new Error(job.error);
+  }
+  throw new Error('Job timed out');
 }
 
+// Generate image
+async function generateImage(prompt, model = 'flux-2') {
+  const { job_id, retry_after } = await fetch(`${BASE}/v1/images/generate`, {
+    method: 'POST', headers: HEADERS,
+    body: JSON.stringify({ prompt, model, aspect_ratio: '16:9' }),
+  }).then(r => r.json());
+  const result = await pollJob(job_id, retry_after * 1000);
+  return result.images[0].url; // CDN image URL
+}
+
+// Generate video
 async function generateVideo(prompt, model = 'kling-25') {
-  const res = await fetch(`${BASE}/v1/videos/generate`, {
-    method: 'POST',
-    headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, model, aspect_ratio: '16:9', duration: 5 }),
-    signal: AbortSignal.timeout(900_000), // 15 min timeout
-  });
-  const data = await res.json();
-  return data.data.url; // CDN video URL
+  const { job_id, retry_after } = await fetch(`${BASE}/v1/videos/generate`, {
+    method: 'POST', headers: HEADERS,
+    body: JSON.stringify({ prompt, model, aspect_ratio: '16:9' }),
+  }).then(r => r.json());
+  const result = await pollJob(job_id, retry_after * 1000, 600000); // 10 min max
+  return result.url; // CDN video URL
+}
+
+// Generate audio
+async function generateAudio(text, voice = 'A-Xee') {
+  const { job_id, retry_after } = await fetch(`${BASE}/v1/audio/generate`, {
+    method: 'POST', headers: HEADERS,
+    body: JSON.stringify({ text, voice, model: 'eleven_v3' }),
+  }).then(r => r.json());
+  const result = await pollJob(job_id, retry_after * 1000);
+  return result.url; // CDN MP3 URL
 }
 ```
 
-### Python
+### Python (async)
 
 ```python
-import requests
+import requests, time
 
 BASE = "https://freepik-api-qg08.onrender.com"
 HEADERS = {"X-API-Key": "your_api_key", "Content-Type": "application/json"}
 
+def poll_job(job_id, interval=5, timeout=600):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(interval)
+        r = requests.get(f"{BASE}/v1/jobs/{job_id}", headers=HEADERS)
+        job = r.json()
+        if job["status"] == "completed": return job["result"]
+        if job["status"] == "failed": raise Exception(job["error"])
+    raise TimeoutError("Job timed out")
+
 # Generate image
 r = requests.post(f"{BASE}/v1/images/generate", headers=HEADERS, json={
-    "prompt": "a futuristic city at dawn",
-    "model": "flux-2",
-    "aspect_ratio": "16:9",
-    "num_images": 1
+    "prompt": "a futuristic city at dawn", "model": "flux-2", "aspect_ratio": "16:9"
 })
-print(r.json()["data"][0]["url"])
+result = poll_job(r.json()["job_id"], interval=3)
+print(result["images"][0]["url"])
 
-# Generate video (long timeout)
+# Generate video
 r = requests.post(f"{BASE}/v1/videos/generate", headers=HEADERS, json={
-    "prompt": "waves crashing on a rocky coast",
-    "model": "kling-25",
-    "aspect_ratio": "16:9",
-    "duration": 5
-}, timeout=900)
-print(r.json()["data"]["url"])
-
-# Remove background
-r = requests.post(f"{BASE}/v1/images/remove-background", headers=HEADERS, json={
-    "image_url": "https://example.com/product.jpg"
+    "prompt": "waves crashing on a rocky coast", "model": "kling-25"
 })
-b64 = r.json()["result_b64"]  # data:image/png;base64,...
+result = poll_job(r.json()["job_id"], interval=10, timeout=600)
+print(result["url"])
+
+# Generate audio
+r = requests.post(f"{BASE}/v1/audio/generate", headers=HEADERS, json={
+    "text": "Hello world", "voice": "A-Xee", "model": "eleven_v3"
+})
+result = poll_job(r.json()["job_id"], interval=5)
+print(result["url"])
 ```
 
-### cURL
+### cURL (async workflow)
 
 ```bash
-# List all unlimited image models
-curl https://freepik-api-qg08.onrender.com/v1/models?type=unlimited
+BASE="https://freepik-api-qg08.onrender.com"
+KEY="YOUR_KEY"
 
-# Generate image
-curl -X POST https://freepik-api-qg08.onrender.com/v1/images/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"a wolf in a neon forest","model":"mystic-2-5","aspect_ratio":"1:1"}'
+# 1. Submit video job
+JOB=$(curl -s -X POST $BASE/v1/videos/generate \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"prompt":"a wolf running through a forest","model":"kling-25"}')
+JOB_ID=$(echo $JOB | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
+echo "Job: $JOB_ID"
 
-# Generate video with start image (kling-25 — start_image optional)
-curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"camera slowly panning right","model":"kling-25","start_image":"https://example.com/frame.jpg","aspect_ratio":"16:9"}' \
-  --max-time 900
+# 2. Poll until done
+while true; do
+  STATUS=$(curl -s $BASE/v1/jobs/$JOB_ID -H "X-API-Key: $KEY")
+  STATE=$(echo $STATUS | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+  echo "Status: $STATE"
+  [ "$STATE" = "completed" ] || [ "$STATE" = "failed" ] && break
+  sleep 10
+done
+echo $STATUS
 
-# Generate video with wan-2-2 (unlimited, start_image REQUIRED, 480p only)
-curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"rainy forest with nostalgic thunderstorm","model":"wan-2-2","start_image":"https://example.com/forest.jpg","aspect_ratio":"16:9","resolution":"480p"}' \
-  --max-time 900
+# Legacy sync (old style — still works)
+curl -X POST "$BASE/v1/videos/generate?wait=true" \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"prompt":"a wave crashing","model":"kling-25"}' --max-time 900
 
-# Generate video with minimax-video-2_3-fast (unlimited, start_image REQUIRED, always 768p/6s)
-curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"person walking forward","model":"minimax-video-2_3-fast","start_image":"https://example.com/person.jpg","aspect_ratio":"16:9"}' \
-  --max-time 900
-
-# Describe an image
-curl -X POST https://freepik-api-qg08.onrender.com/v1/images/describe \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
+# Describe an image (sync — instant)
+curl -X POST $BASE/v1/images/describe \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"image_url":"https://example.com/photo.jpg"}'
-
-# List voices (ElevenLabs only)
-curl "https://freepik-api-qg08.onrender.com/v1/audio/voices?provider=elevenlabs" \
-  -H "X-API-Key: YOUR_KEY"
-
-# Generate speech
-curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Good morning, how can I help you today?","voice":"A-Xee","model":"eleven_v3"}'
 ```
 
 ---
 
 ## Tips
 
-- **Start with unlimited models** — `flux-2`, `flux`, `mystic-2-5`, `imagen-nano-banana-2`, `kling-25` (video), `minimax-video-2_3` (video) all cost no credits and work out of the box
-- **`wan-2-2`** is unlimited but requires `start_image` and caps at 480p — use `kling-25` or `minimax-video-2_3` for text-only or higher-res unlimited video
-- **`minimax-video-2_3`** — free text-to-video at 768p/6s; **`minimax-video-2_3-fast`** — free image-to-video (start_image required), also 768p/6s
-- **Check model availability** — hit `GET /v1/models` first to see what's available with the current accounts
-- **Use `/health`** to see real-time slot availability before submitting long jobs
-- **Video timeout** — always set your HTTP client timeout to at least 15 minutes for video requests
-- **CDN links expire** — download and store within 24 hours if the file is important
-- **`revised_prompt`** — the actual prompt sent to the model may differ from yours (Magnific applies smart prompt enhancement by default)
-- **Variations** — set `"variations": true` on image requests for more creative, diverse outputs
+- **Always use async** — submit job, get `job_id` immediately, poll until done. Use `?wait=true` only for quick scripts or testing
+- **Poll with `retry_after`** — the response tells you how often to poll: 3s for images, 5s for audio, 10s for video. Don't poll faster than this
+- **Jobs expire in 2 hours** — once `status === "completed"` store the `result.url` immediately; the job entry and CDN URL both expire
+- **Start with unlimited models** — `flux-2`, `mystic-2-5`, `kling-25`, `minimax-video-2_3` cost no credits and work out of the box
+- **`wan-2-2`** requires `start_image`, caps at 480p — use `kling-25` for text-only unlimited video
+- **`minimax-video-2_3`** = text-to-video 768p/6s free; **`minimax-video-2_3-fast`** = image-to-video 768p/6s free (start_image required)
+- **Credit routing is automatic** — zero-credit accounts are skipped for paid models; funded accounts are picked first
+- **CDN links expire ~24h** — download and store if needed long-term
+- **`revised_prompt`** — Magnific may enhance your prompt; the actual prompt used is in the result
+- **Check capacity** — `GET /health` shows live slot availability; `GET /v1/jobs` shows queued/running jobs
