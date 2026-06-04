@@ -83,6 +83,8 @@ function verifyTOTP(code) {
 
 function adminAuthMiddleware(req, res, next) {
   if (isValidAdminSession(req.cookies?.admin_session)) return next();
+  // API calls (POST/DELETE) expect JSON — return 401 so the client shows a clean error
+  if (req.method !== 'GET') return res.status(401).json({ ok: false, error: 'Session expired — please log in again at /admin/login' });
   res.redirect("/admin/login?next=" + encodeURIComponent(req.path));
 }
 
