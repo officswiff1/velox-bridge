@@ -633,6 +633,7 @@ class AccountManager {
 
   markExpired(acc) {
     acc.status = "expired";
+    acc.sessionDead = true; // 401 from generation = cookies are dead
     addLog("WARN", `[${acc.name}] Marked as expired — remaining capacity: ${this.totalCapacity} slots`);
   }
 }
@@ -1926,6 +1927,9 @@ async function tryWithRotation(pool, tag, fn) {
       try {
         const result = await fn(freeAcc);
         release();
+        // Track last successful generation for admin UI
+        freeAcc.lastUsedAt = Date.now();
+        freeAcc.lastUsedTag = tag; // 'image' | 'video' | 'audio' | etc.
         return result;
       } catch (e) {
         release();
@@ -1973,6 +1977,8 @@ async function tryWithRotation(pool, tag, fn) {
     try {
       const result = await fn(waitAcc);
       release2();
+      waitAcc.lastUsedAt = Date.now();
+      waitAcc.lastUsedTag = tag;
       return result;
     } catch (e) {
       release2();
@@ -2060,9 +2066,11 @@ async function checkAccountPlan(acc) {
     acc.status = 'inactive';
     acc.planStatus = 'expired';
     acc.planCheckedAt = Date.now();
+    acc.sessionDead = true;
     addLog('WARN', `[${acc.name}] Auto-deactivated — session dead (page load returned non-200, cookies likely expired)`);
     return;
   }
+  acc.sessionDead = false; // session is alive — clear any previous dead flag
 
   const planHeaders = {
     'accept': '*/*',
@@ -2979,6 +2987,9 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
     planExpiry:   a.planExpiry  || null,
     video:        a.video       || false,
     planCheckedAt: a.planCheckedAt ? new Date(a.planCheckedAt).toISOString().slice(0,16).replace('T',' ') : null,
+    lastUsedAt:   a.lastUsedAt  || null,
+    lastUsedTag:  a.lastUsedTag || null,
+    sessionDead:  a.sessionDead || false,
   }));
   const activeCount  = accounts.filter(a => a.status === 'active').length;
   const totalSlots   = activeCount * SLOTS_PER_ACCOUNT;
@@ -3100,6 +3111,34 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
             ${a.planCheckedAt?`<div style="font-size:9px;color:#444">${a.planCheckedAt}</div>`:''}
           </div>
         </div>
+        ${(()=>{
+          // Last used display
+          let lastUsedHtml = '';
+          if (a.lastUsedAt) {
+            const diff = Date.now() - a.lastUsedAt;
+            const mins = Math.floor(diff/60000);
+            const hrs  = Math.floor(diff/3600000);
+            const days = Math.floor(diff/86400000);
+            const ago  = days>0?`${days}d ago`:hrs>0?`${hrs}h ago`:mins>0?`${mins}m ago`:'just now';
+            const color = mins<60?'#4ade80':hrs<24?'#facc15':'#f87171';
+            const tag   = a.lastUsedTag||'gen';
+            lastUsedHtml = `<div style="margin-top:8px;padding:6px 8px;background:#0a1a0a;border:1px solid #1a3a1a;border-radius:6px;font-size:11px">
+              <span style="color:#555">✅ Last used:</span>
+              <span style="color:${color};font-weight:600;margin-left:4px">${ago}</span>
+              <span style="color:#555;margin-left:4px">for ${tag}</span>
+            </div>`;
+          } else {
+            lastUsedHtml = `<div style="margin-top:8px;padding:6px 8px;background:#0f0f0f;border:1px solid #1f1f1f;border-radius:6px;font-size:11px;color:#555">⬜ Never used since last restart</div>`;
+          }
+          // Session health warning for inactive accounts
+          let sessionHtml = '';
+          if (a.status !== 'active' && a.sessionDead) {
+            sessionHtml = `<div style="margin-top:6px;padding:6px 8px;background:#1a0a0a;border:1px solid #3a1a1a;border-radius:6px;font-size:11px;color:#fca5a5">⚠️ <b>Cookies expired</b> — paste fresh cookies to fix. Use <b>Copy Cookies</b> to verify first.</div>`;
+          } else if (a.status !== 'active' && !a.sessionDead) {
+            sessionHtml = `<div style="margin-top:6px;padding:6px 8px;background:#1a1a0a;border:1px solid #3a3a1a;border-radius:6px;font-size:11px;color:#fde68a">ℹ️ Manually disabled or subscription expired — <b>Enable</b> may still work for unlimited models.</div>`;
+          }
+          return lastUsedHtml + sessionHtml;
+        })()}
         <div class="acc-actions">
           <button class="btn btn-sm btn-gray" onclick="checkAccount('${encodeURIComponent(a.name)}',this)">Check</button>
           <button class="btn btn-sm btn-warn" onclick="toggleAccount('${encodeURIComponent(a.name)}',this)">${a.status==='active'?'Disable':'Enable'}</button>
