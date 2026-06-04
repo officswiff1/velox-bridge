@@ -2249,54 +2249,119 @@ async function generateWithRotation(params) {
   });
 }
 
+// ── Job Store (async generation) ─────────────────────────────────────────────
+// Stores in-memory jobs keyed by job_id. Cleaned up after 2 hours.
+const jobStore = new Map();
+
+function createJob(type, { model, prompt, text } = {}) {
+  const id = 'job_' + crypto.randomBytes(10).toString('hex');
+  const job = {
+    id, type,
+    status: 'queued',   // queued → processing → completed | failed
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    model: model || null,
+    prompt: (prompt || text || '').slice(0, 200),
+    result: null,       // set on completion
+    error: null,        // set on failure
+    account: null,
+    processing_time_ms: null,
+  };
+  jobStore.set(id, job);
+  return job;
+}
+
+function finishJob(job, result, account, t0) {
+  job.status = 'completed';
+  job.result = result;
+  job.account = account;
+  job.processing_time_ms = Date.now() - t0;
+  job.updated_at = Date.now();
+}
+
+function failJob(job, err, t0) {
+  job.status = 'failed';
+  job.error = err.message || String(err);
+  job.processing_time_ms = Date.now() - t0;
+  job.updated_at = Date.now();
+}
+
+// Clean up jobs older than 2 hours every 5 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 7200000;
+  for (const [id, job] of jobStore) {
+    if (job.created_at < cutoff) jobStore.delete(id);
+  }
+}, 300000);
+
+// ── GET /v1/jobs/:id ──────────────────────────────────────────────────────────
+app.get('/v1/jobs/:id', auth, (req, res) => {
+  const job = jobStore.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found or expired (jobs are kept for 2 hours)' });
+  // Add retry_after hint for incomplete jobs
+  const out = { ...job };
+  if (job.status === 'queued' || job.status === 'processing') {
+    out.retry_after = job.type === 'video' ? 10 : job.type === 'audio' ? 5 : 3;
+  }
+  res.json(out);
+});
+
+// ── GET /v1/jobs ──────────────────────────────────────────────────────────────
+app.get('/v1/jobs', auth, (req, res) => {
+  const all = [...jobStore.values()].sort((a, b) => b.created_at - a.created_at).slice(0, 100);
+  res.json({ jobs: all, total: all.length });
+});
+
 // ── POST /v1/images/generate ──────────────────────────────────────────────────
 app.post("/v1/images/generate", auth, async (req, res) => {
   const { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model, variations = false, folder } = req.body || {};
+  const syncMode = req.query.wait === 'true';
 
-  if (!prompt?.trim()) {
-    return res.status(400).json({ error: "prompt is required" });
-  }
+  if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
 
-  // validate model if provided
   const resolvedModel = model || mode || "auto";
   const modelInfo = IMAGE_MODELS.find(m => m.id === resolvedModel);
   if (resolvedModel !== "auto" && !modelInfo) {
-    return res.status(400).json({
-      error: `Unknown model "${resolvedModel}". Call GET /v1/models to see available models.`,
-    });
+    return res.status(400).json({ error: `Unknown model "${resolvedModel}". Call GET /v1/models to see available models.` });
   }
 
-  try {
-    const _t0 = Date.now();
-    const { images, account } = await generateWithRotation({
-      prompt,
-      num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
-      aspect_ratio,
-      model: resolvedModel,
-      variations: Boolean(variations),
-      folder: folder || null,
-    });
+  const genParams = {
+    prompt,
+    num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
+    aspect_ratio,
+    model: resolvedModel,
+    variations: Boolean(variations),
+    folder: folder || null,
+  };
 
-    res.json({
-      created: Math.floor(Date.now() / 1000),
-      processing_time_ms: Date.now() - _t0,
-      data: images.map(img => ({
-        url: img.url,
-        preview_url: img.preview,
-        revised_prompt: img.prompt,
-        width: img.width,
-        height: img.height,
-        mode: img.mode,
-        seed: img.seed,
-        id: img.id,
-        family: img.family,
-      })),
-      account,
-    });
-  } catch (e) {
-    addLog("ERROR", `Generation failed: ${e.message}`);
-    res.status(e.status || 500).json({ error: e.message });
+  if (syncMode) {
+    // Legacy sync — wait for result
+    try {
+      const _t0 = Date.now();
+      const { images, account } = await generateWithRotation(genParams);
+      return res.json({
+        created: Math.floor(Date.now() / 1000),
+        processing_time_ms: Date.now() - _t0,
+        data: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, mode: img.mode, seed: img.seed, id: img.id, family: img.family })),
+        account,
+      });
+    } catch (e) {
+      addLog("ERROR", `Generation failed: ${e.message}`);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
   }
+
+  // Async — return job_id immediately
+  const job = createJob('image', { model: resolvedModel, prompt });
+  res.status(202).json({ job_id: job.id, status: 'queued', retry_after: 3, poll_url: `/v1/jobs/${job.id}` });
+
+  const t0 = Date.now();
+  job.status = 'processing'; job.updated_at = Date.now();
+  generateWithRotation(genParams)
+    .then(({ images, account }) => finishJob(job, {
+      images: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, mode: img.mode, seed: img.seed, id: img.id, family: img.family }))
+    }, account, t0))
+    .catch(e => { addLog('ERROR', `[job ${job.id}] Image failed: ${e.message}`); failJob(job, e, t0); });
 });
 
 // ── POST /v1/images/generations (OpenAI-compatible) ───────────────────────────
@@ -2345,63 +2410,59 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
     prompt_mode = "manual",
     folder = null,
   } = req.body || {};
+  const syncMode = req.query.wait === 'true';
 
   if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
 
   const vm = VIDEO_MODELS.find(m => m.id === model);
-  if (!vm) {
-    return res.status(400).json({
-      error: `Unknown video model "${model}". Call GET /v1/models?type=video to see available models.`,
-    });
-  }
+  if (!vm) return res.status(400).json({ error: `Unknown video model "${model}". Call GET /v1/models?type=video to see available models.` });
 
   if (start_image && !vm.sf) return res.status(400).json({ error: `Model "${model}" does not support start_image` });
   if (!start_image && vm.sfRequired) return res.status(400).json({ error: `Model "${model}" requires start_image` });
   if (end_image   && !vm.ef) return res.status(400).json({ error: `Model "${model}" does not support end_image` });
   if (references.length > 0 && !vm.refs) return res.status(400).json({ error: `Model "${model}" does not support references` });
 
-  try {
-    const _t0 = Date.now();
-    // Clamp resolution to model's max (e.g. wan-2-2 is only unlimited at 480p)
-    const effectiveResolution = vm.maxResolution
-      ? (['480p','720p','1080p'].indexOf(resolution) > ['480p','720p','1080p'].indexOf(vm.maxResolution) ? vm.maxResolution : resolution)
-      : resolution;
+  const effectiveResolution = vm.maxResolution
+    ? (['480p','720p','1080p'].indexOf(resolution) > ['480p','720p','1080p'].indexOf(vm.maxResolution) ? vm.maxResolution : resolution)
+    : resolution;
 
-    const { video, account } = await generateVideoWithRotation({
-      prompt,
-      model,
-      negative_prompt,
-      aspect_ratio,
-      duration: Math.min(Math.max(parseInt(duration) || 5, 1), 10),
-      resolution: effectiveResolution,
-      sound_effects: Boolean(sound_effects),
-      start_image,
-      end_image,
-      references: Array.isArray(references) ? references : [],
-      prompt_mode: prompt_mode === 'auto' ? 'auto' : 'manual',
-      folder,
-    });
+  const genParams = {
+    prompt, model, negative_prompt, aspect_ratio,
+    duration: Math.min(Math.max(parseInt(duration) || 5, 1), 10),
+    resolution: effectiveResolution,
+    sound_effects: Boolean(sound_effects),
+    start_image, end_image,
+    references: Array.isArray(references) ? references : [],
+    prompt_mode: prompt_mode === 'auto' ? 'auto' : 'manual',
+    folder,
+  };
 
-    res.json({
-      created: Math.floor(Date.now() / 1000),
-      processing_time_ms: Date.now() - _t0,
-      data: {
-        url: video.url,
-        prompt: video.prompt,
-        model: video.model,
-        slug: video.slug,
-        duration: video.duration,
-        aspect_ratio: video.aspect_ratio,
-        resolution: video.resolution,
-        identifier: video.identifier,
-        id: video.id,
-      },
-      account,
-    });
-  } catch (e) {
-    addLog("ERROR", `Video generation failed: ${e.message}`);
-    res.status(e.status || 500).json({ error: e.message });
+  if (syncMode) {
+    // Legacy sync — wait for result (up to 10 min)
+    try {
+      const _t0 = Date.now();
+      const { video, account } = await generateVideoWithRotation(genParams);
+      return res.json({
+        created: Math.floor(Date.now() / 1000),
+        processing_time_ms: Date.now() - _t0,
+        data: { url: video.url, prompt: video.prompt, model: video.model, slug: video.slug, duration: video.duration, aspect_ratio: video.aspect_ratio, resolution: video.resolution, identifier: video.identifier, id: video.id },
+        account,
+      });
+    } catch (e) {
+      addLog("ERROR", `Video generation failed: ${e.message}`);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
   }
+
+  // Async — return job_id immediately, generation runs in background
+  const job = createJob('video', { model, prompt });
+  res.status(202).json({ job_id: job.id, status: 'queued', retry_after: 10, poll_url: `/v1/jobs/${job.id}` });
+
+  const t0 = Date.now();
+  job.status = 'processing'; job.updated_at = Date.now();
+  generateVideoWithRotation(genParams)
+    .then(({ video, account }) => finishJob(job, { url: video.url, prompt: video.prompt, model: video.model, slug: video.slug, duration: video.duration, aspect_ratio: video.aspect_ratio, resolution: video.resolution, identifier: video.identifier, id: video.id }, account, t0))
+    .catch(e => { addLog('ERROR', `[job ${job.id}] Video failed: ${e.message}`); failJob(job, e, t0); });
 });
 
 // ── GET /v1/audio/voices ──────────────────────────────────────────────────────
@@ -2472,54 +2533,53 @@ app.post('/v1/audio/generate', auth, async (req, res) => {
     system_instruction = '',
     folder = null,
   } = req.body || {};
+  const syncMode = req.query.wait === 'true';
 
   if (!text?.trim()) return res.status(400).json({ error: 'text is required' });
 
   const am = AUDIO_MODELS.find(m => m.id === model);
-  if (!am) {
-    return res.status(400).json({
-      error: `Unknown audio model "${model}". Call GET /v1/models?type=audio to see available models.`,
-    });
-  }
+  if (!am) return res.status(400).json({ error: `Unknown audio model "${model}". Call GET /v1/models?type=audio to see available models.` });
 
   const validStyles = ['expressive', 'neutral', 'consistent'];
   if (style && !validStyles.includes(style.toLowerCase())) {
     return res.status(400).json({ error: `Invalid style "${style}". Must be one of: ${validStyles.join(', ')}` });
   }
 
-  try {
-    const _t0 = Date.now();
-    const { audio, account } = await generateAudioWithRotation({
-      text: text.trim(),
-      model,
-      voice: voice || null,
-      voice_id: voice_id || null,
-      style: style || 'neutral',
-      speed: parseFloat(speed) || 1.0,
-      temperature: parseFloat(temperature) || 1.0,
-      system_instruction: system_instruction || '',
-      folder: folder || null,
-    });
+  const genParams = {
+    text: text.trim(), model,
+    voice: voice || null, voice_id: voice_id || null,
+    style: style || 'neutral',
+    speed: parseFloat(speed) || 1.0,
+    temperature: parseFloat(temperature) || 1.0,
+    system_instruction: system_instruction || '',
+    folder: folder || null,
+  };
 
-    res.json({
-      created: Math.floor(Date.now() / 1000),
-      processing_time_ms: Date.now() - _t0,
-      data: {
-        url: audio.url,
-        text: audio.text,
-        model: audio.model,
-        voice: audio.voice,
-        voice_id: audio.voice_id,
-        duration: audio.duration,
-        identifier: audio.identifier,
-        id: audio.id,
-      },
-      account,
-    });
-  } catch (e) {
-    addLog('ERROR', `Audio generation failed: ${e.message}`);
-    res.status(e.status || 500).json({ error: e.message });
+  if (syncMode) {
+    try {
+      const _t0 = Date.now();
+      const { audio, account } = await generateAudioWithRotation(genParams);
+      return res.json({
+        created: Math.floor(Date.now() / 1000),
+        processing_time_ms: Date.now() - _t0,
+        data: { url: audio.url, text: audio.text, model: audio.model, voice: audio.voice, voice_id: audio.voice_id, duration: audio.duration, identifier: audio.identifier, id: audio.id },
+        account,
+      });
+    } catch (e) {
+      addLog('ERROR', `Audio generation failed: ${e.message}`);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
   }
+
+  // Async
+  const job = createJob('audio', { model, prompt: text });
+  res.status(202).json({ job_id: job.id, status: 'queued', retry_after: 5, poll_url: `/v1/jobs/${job.id}` });
+
+  const t0 = Date.now();
+  job.status = 'processing'; job.updated_at = Date.now();
+  generateAudioWithRotation(genParams)
+    .then(({ audio, account }) => finishJob(job, { url: audio.url, text: audio.text, model: audio.model, voice: audio.voice, voice_id: audio.voice_id, duration: audio.duration, identifier: audio.identifier, id: audio.id }, account, t0))
+    .catch(e => { addLog('ERROR', `[job ${job.id}] Audio failed: ${e.message}`); failJob(job, e, t0); });
 });
 
 // ── POST /v1/images/describe ──────────────────────────────────────────────────
