@@ -920,8 +920,13 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   }
 
   if (status !== 200 || !json?.family) {
-    const err = new Error(`Generation start failed (${status}): ${text.slice(0, 200)}`);
-    err.status = status;
+    // Parse Magnific's error into a clean human-readable message
+    let reason = text.slice(0, 200);
+    if (json?.message)            reason = json.message;
+    else if (json?.error === 'insufficient_credits' || status === 422) reason = `Not enough credits for model "${resolvedMode}" — check your account balance`;
+    else if (status === 429)       reason = 'Rate limited by Magnific — try again in a moment';
+    const err = new Error(reason);
+    err.status = status === 422 ? 402 : status;
     throw err;
   }
 
@@ -1198,11 +1203,26 @@ async function generateVideo(acc, {
     }
 
     if (item.status === 'failed') {
+      const errorCode = item.metadata?.errorCode;
       const errDetail = item.metadata?.error || item.metadata?.message || item.metadata?.reason
         || item.error || item.message || item.reason || item.errorMessage || item.failReason
         || item.clips?.[0]?.error || item.clips?.[0]?.metadata?.error;
-      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} errorCode=${item.metadata?.errorCode} full=${JSON.stringify(item).slice(0, 600)}`);
-      throw new Error(`Video generation failed: ${errDetail || 'not enough credits or model unavailable'}`);
+      addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} errorCode=${errorCode} full=${JSON.stringify(item).slice(0, 600)}`);
+      // errorCode 500001 = Magnific backend failure (credits OR model unavailable — no way to distinguish)
+      let reason = errDetail;
+      if (!reason) {
+        if (errorCode === 500001) {
+          const hasCredits = acc.credits == null || acc.credits >= (vm.credits || 0);
+          reason = hasCredits
+            ? `Model "${vm.id}" is temporarily unavailable or at capacity — try again in a few minutes`
+            : `Insufficient credits for model "${vm.id}" (requires ${vm.credits} credits)`;
+        } else {
+          reason = `Generation failed (errorCode ${errorCode || 'unknown'})`;
+        }
+      }
+      const err = new Error(`Video generation failed: ${reason}`);
+      err.status = (errorCode === 500001 && acc.credits != null && acc.credits < (vm.credits || 0)) ? 402 : 500;
+      throw err;
     }
   }
 
@@ -1287,13 +1307,24 @@ async function generateAudio(acc, {
   let json = null;
   try { json = JSON.parse(rawText); } catch {}
 
-  if (r.status === 401 || r.status === 403) {
-    const err = new Error(`Auth failed (${r.status})`);
-    err.status = r.status;
+  if (r.status === 401) {
+    const err = new Error('Auth failed — session expired');
+    err.status = 401;
+    throw err;
+  }
+  if (r.status === 403) {
+    const err = new Error('Audio generation not available on this account\'s plan — voiceover feature required');
+    err.status = 403;
+    throw err;
+  }
+  if (r.status === 422 || (json?.error === 'INSUFFICIENT_CREDITS')) {
+    const err = new Error('Insufficient credits for audio generation — all audio models cost 5 credits per request. Top up an account with audio credits.');
+    err.status = 402;
     throw err;
   }
   if (r.status !== 202 && r.status !== 200) {
-    const err = new Error(`Audio generation start failed (${r.status}): ${rawText.slice(0, 200)}`);
+    let reason = json?.message || json?.error || rawText.slice(0, 150);
+    const err = new Error(`Audio generation failed (${r.status}): ${reason}`);
     err.status = r.status;
     throw err;
   }
@@ -1346,7 +1377,11 @@ async function generateAudio(acc, {
     if (item.status === 'failed') {
       const errDetail = item.metadata?.error || item.metadata?.message || item.error || item.message;
       addLog('WARN', `[${acc.name}] Audio failed — identifier=${identifier} detail=${JSON.stringify(item.metadata || 'none')}`);
-      throw new Error(`Audio generation failed: ${errDetail || 'unknown error'}`);
+      let reason = errDetail || 'Audio generation failed on the server';
+      if (typeof reason === 'string' && reason.toUpperCase().includes('CREDIT')) {
+        reason = 'Insufficient credits — audio models cost 5 credits per request';
+      }
+      throw new Error(reason);
     }
   }
 
@@ -1957,8 +1992,9 @@ async function tryWithRotation(pool, tag, fn) {
   }
 
   const triedList = [...tried].join(', ') || 'none';
-  throw lastError || Object.assign(
-    new Error(`All accounts failed for ${tag}. Tried: ${triedList}`),
+  if (lastError) throw lastError; // propagate the actual underlying error (credit, model, etc.)
+  throw Object.assign(
+    new Error(`All accounts failed for ${tag} (tried: ${triedList})`),
     { status: 503 }
   );
 }
@@ -1978,10 +2014,19 @@ async function generateVideoWithRotation(params) {
   const vm = VIDEO_MODELS.find(m => m.id === params.model);
   const creditCost = vm?.credits || 0;
   if (!vm?.unlimited && creditCost > 0) {
+    const checkedAccounts = pool.filter(a => a.planCheckedAt != null && a.credits != null);
     const creditPool = pool.filter(a =>
-      a.planCheckedAt == null ||
+      a.planCheckedAt == null ||                          // not yet checked — include optimistically
       (a.credits != null && a.credits >= creditCost)
     );
+    if (creditPool.length === 0 && checkedAccounts.length > 0) {
+      // All checked accounts are confirmed insufficient — fail immediately with clear message
+      const maxAvailable = Math.max(...checkedAccounts.map(a => a.credits ?? 0));
+      throw Object.assign(
+        new Error(`Insufficient credits for model "${params.model}" — requires ${creditCost} credits, highest available: ${maxAvailable}. Top up an account or use an unlimited model like kling-25.`),
+        { status: 402 }
+      );
+    }
     if (creditPool.length > 0) {
       pool = creditPool;
       addLog('INFO', `Video credit model "${params.model}" (${creditCost}cr) — routing to ${pool.map(a => a.name).join(', ')}`);
