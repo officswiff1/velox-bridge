@@ -391,7 +391,7 @@ Generates a video from a text prompt (and optionally a start/end image). Polls i
 
 `data.url` is a CDN MP4 link that expires ~24h after generation.
 
-> **Important:** Only accounts with the `video` flag enabled are used for video rotation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `wan-2-2`, etc.) no credits are needed. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the account must have enough credits — if not, Magnific queues the job but returns `status=failed` with no URL. Use unlimited video models when accounts are low on credits.
+> **Account routing:** All active accounts are eligible for video generation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `wan-2-2`, etc.) any active account is used. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the server automatically routes only to accounts with sufficient credits — zero-credit accounts are skipped. If no account has enough credits, the request fails with a clear error.
 
 ---
 
@@ -645,7 +645,8 @@ Returns current plan and credit status for all accounts.
 |---|---|
 | `planStatus` | `"premium"` (active subscription) / `"expired"` (cancelled but session valid) / `"free"` (no subscription) |
 | `credits` | Remaining credits for credit-based models |
-| `video` | Whether this account can process video requests |
+| `video` | Video flag — informational only; all active accounts join the video pool regardless |
+| `videoOverride` | `true` if the video flag was manually set via admin (won't be changed by plan checks) |
 
 ---
 
