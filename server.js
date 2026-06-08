@@ -2839,7 +2839,7 @@ app.get("/v1/models", (req, res) => {
 // ── POST /admin/probe-mode (temp debug) ───────────────────────────────────────
 // Calls start-tti-v2 directly with any mode string and returns Magnific's raw response.
 // Used to discover correct mode IDs. Remove once IDs confirmed.
-app.post('/admin/probe-mode', adminAuthMiddleware, async (req, res) => {
+app.post('/admin/probe-mode', auth, async (req, res) => {
   const { mode } = req.body || {};
   if (!mode) return res.status(400).json({ error: 'mode required' });
   const pool = manager.getPool();
