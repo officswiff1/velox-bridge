@@ -144,10 +144,9 @@ const IMAGE_MODELS = [
   { id: "z-image",               name: "Z-Image",                       unlimited: true  },
   { id: "runway-gen4",           name: "Runway (Deprecated)",           unlimited: true  },
   // ── Credit-based (costs credits even on Premium+) ────────────────────────
-  // Google Nano Banana 2 variants (4K, flash sizes)
-  { id: "imagen-nano-banana-2-4k",       name: "Google Nano Banana Pro 4K",    unlimited: false, credits: 150 },
-  { id: "imagen-nano-banana-2-flash-2k", name: "Google Nano Banana Pro 2K",    unlimited: false, credits: 75  },
-  { id: "imagen-nano-banana-2-flash-4k", name: "Google Nano Banana Pro Flash 4K", unlimited: false, credits: 150 },
+  // NOTE: Google Nano Banana 2 credit variants (4K, flash-2k, flash-4k) were removed —
+  // their Magnific mode IDs were unverified and Magnific rejects them with "The selected mode is invalid."
+  // Capture correct IDs from browser DevTools (start-tti-v2 request body → mode field) and re-add.
   // Flux.2 credit models
   { id: "flux-2-flex",           name: "Flux.2 Flex",                   unlimited: false, credits: 40  },
   { id: "flux-2-max",            name: "Flux.2 Max",                    unlimited: false, credits: 65  },
@@ -923,9 +922,15 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   if (status !== 200 || !json?.family) {
     // Parse Magnific's error into a clean human-readable message
     let reason = text.slice(0, 200);
-    if (json?.message)            reason = json.message;
-    else if (json?.error === 'insufficient_credits' || status === 422) reason = `Not enough credits for model "${resolvedMode}" — check your account balance`;
-    else if (status === 429)       reason = 'Rate limited by Magnific — try again in a moment';
+    if (json?.message === 'The selected mode is invalid.') {
+      reason = `Model "${resolvedMode}" is not recognized by Magnific — this model ID may be incorrect or no longer available. Use GET /v1/models to list valid model IDs.`;
+    } else if (json?.message) {
+      reason = json.message;
+    } else if (json?.error === 'insufficient_credits' || status === 422) {
+      reason = `Not enough credits for model "${resolvedMode}" — check your account balance`;
+    } else if (status === 429) {
+      reason = 'Rate limited by Magnific — try again in a moment';
+    }
     const err = new Error(reason);
     err.status = status === 422 ? 402 : status;
     throw err;
