@@ -70,8 +70,6 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| Method | Path | Auth | Description |
-|---|---|---|---|
 | `POST` | `/v1/images/generate` | API key | Submit image job → `job_id` (async) |
 | `POST` | `/v1/videos/generate` | API key | Submit video job → `job_id` (async) |
 | `POST` | `/v1/audio/generate` | API key | Submit audio job → `job_id` (async) |
@@ -447,13 +445,13 @@ Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). P
 | `prompt` | string | — | ✅ | Text description of the video |
 | `model` | string | `"bytedance-seedance-fast-2.0"` | | Video model ID — see [Video Models](#video-models) below |
 | `negative_prompt` | string | `""` | | Things to avoid in the video |
-| `aspect_ratio` | string | `"16:9"` | | `"16:9"` `"9:16"` `"1:1"` |
-| `duration` | number | `5` | | Duration in seconds (1–10) |
-| `resolution` | string | `"720p"` | | `"720p"` or `"1080p"` |
-| `sound_effects` | boolean | `true` | | Auto-generate sound effects |
-| `start_image` | string | `null` | ⚠️ Required for `wan-2-2`, `minimax-video-2_3-fast` | Start frame URL or base64 data URL (image-to-video). Only on models that support it — check `GET /v1/models?type=video` for `features.start_image`. Some models **require** it — omitting it returns HTTP 400. |
-| `end_image` | string | `null` | | End frame URL or base64 data URL. Only on models that support it. |
-| `references` | array | `[]` | | Reference media: `[{"type": "image"|"video"|"style"|"character"|"product"|"audio", "url": "..."}]`. Only on models with `features.references`. |
+| `aspect_ratio` | string | `"16:9"` | | `"16:9"` `"9:16"` `"1:1"` (support varies by model) |
+| `duration` | number | `5` | | Duration in seconds — valid values depend on model (e.g. `[5,10]` for Kling, `[4,6,8]` for Veo, `1–15` for PixVerse). Check `durations` in `GET /v1/models?type=video`. |
+| `resolution` | string | model default | | Output resolution — e.g. `"720p"` `"1080p"` `"4K"` `"2160p"`. Valid values depend on model — check `resolutions` in `GET /v1/models?type=video`. For unlimited models, requesting a resolution above the free tier costs credits. |
+| `sound_effects` | boolean | `true` | | Auto-generate sound effects (not supported on MiniMax models — ignored) |
+| `start_image` | string | `null` | ⚠️ Required for some models | Start frame URL or base64 data URL (image-to-video). Check `features.start_image_required` in `GET /v1/models?type=video` — if `true`, omitting returns HTTP 400. If `features.start_image` is `false`, passing it returns HTTP 400. |
+| `end_image` | string | `null` | | End frame URL or base64. Only on models where `features.end_image = true`. |
+| `references` | array | `[]` | | Reference media: `[{"type": "image"\|"video"\|"style"\|"character"\|"product"\|"audio", "url": "..."}]`. Only on models where `features.references = true`. Max items = `features.refs_limit`. |
 | `prompt_mode` | string | `"manual"` | | `"manual"` = use prompt exactly, `"auto"` = model re-interprets |
 | `folder` | string | account default | | Folder UUID — saves video into that space |
 
@@ -623,14 +621,16 @@ Lists all available models. No authentication required.
 | `type` | `unlimited` `credits` `video` `audio` | Filter by model type (omit for all image models) |
 
 ```
-GET /v1/models                  → all image models
-GET /v1/models?type=unlimited   → unlimited Premium+ image models (41)
-GET /v1/models?type=credits     → credit-based image models (11)
+GET /v1/models                  → all image models (43 total)
+GET /v1/models?type=unlimited   → unlimited image models (34)
+GET /v1/models?type=credits     → credit-based image models (9)
 GET /v1/models?type=video       → video models (42)
 GET /v1/models?type=audio       → audio/TTS models (6)
 ```
 
 ### Response (image)
+
+Each image model includes reference-image support, max images per generation, and available resolution tiers:
 
 ```json
 [
@@ -638,18 +638,36 @@ GET /v1/models?type=audio       → audio/TTS models (6)
     "id": "flux-2",
     "name": "Flux.2 Pro",
     "type": "unlimited",
-    "credits": 0
+    "credits": 0,
+    "refs": true,
+    "maxImages": 2,
+    "resolutions": ["1k", "2k"]
   },
   {
-    "id": "flux-2-flex",
-    "name": "Flux.2 Flex",
+    "id": "imagen-nano-banana-2-flash",
+    "name": "Google Nano Banana 2",
+    "type": "unlimited",
+    "credits": 0,
+    "refs": true,
+    "maxImages": 4,
+    "resolutions": ["1k", "2k", "4k"],
+    "note": "Gemini 3.1 Flash"
+  },
+  {
+    "id": "gpt-2",
+    "name": "GPT 2",
     "type": "credits",
-    "credits": 40
+    "credits": 200,
+    "refs": true,
+    "maxImages": 1,
+    "resolutions": ["1k", "2k", "4k"]
   }
 ]
 ```
 
 ### Response (video)
+
+Each video model includes full capability metadata — resolutions, duration options, reference limits:
 
 ```json
 [
@@ -658,11 +676,47 @@ GET /v1/models?type=audio       → audio/TTS models (6)
     "name": "Kling 2.5",
     "credits": 0,
     "unlimited": true,
+    "unlimitedResolution": "720p",
     "features": {
       "start_image": true,
       "end_image": true,
-      "references": false
-    }
+      "start_image_required": false,
+      "references": false,
+      "refs_limit": 0
+    },
+    "resolutions": ["1080p", "720p"],
+    "durations": [5, 10]
+  },
+  {
+    "id": "wan-2-2",
+    "name": "Wan 2.2",
+    "credits": 0,
+    "unlimited": true,
+    "unlimitedResolution": "480p",
+    "features": {
+      "start_image": true,
+      "end_image": false,
+      "start_image_required": true,
+      "references": false,
+      "refs_limit": 0
+    },
+    "resolutions": ["720p", "580p", "480p"],
+    "durations": [5, 10]
+  },
+  {
+    "id": "google-veo3_1",
+    "name": "Google Veo 3.1",
+    "credits": 800,
+    "unlimited": false,
+    "features": {
+      "start_image": true,
+      "end_image": true,
+      "start_image_required": false,
+      "references": true,
+      "refs_limit": 3
+    },
+    "resolutions": ["4K", "1080p", "720p"],
+    "durations": [4, 6, 8]
   }
 ]
 ```
@@ -801,124 +855,223 @@ Returns the last 100 server log entries. Useful for debugging.
 
 ## Image Models
 
-Use any of these `id` values as the `model` field in `/v1/images/generate`.
+Use any of these `id` values as the `model` field in `/v1/images/generate`. All IDs verified against Magnific's live API 2026-06-08.
 
-### Unlimited (no credits needed — Premium+ plan)
+**Column key:** `refs` = supports `references[]` image input · `max` = max images per generation · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K)
 
-| Model ID | Name |
-|---|---|
-| `auto` | Auto (server picks best) |
-| `flux` | Flux.1 Fast |
-| `flux-dev` | Flux.1 |
-| `flux-realism` | Flux.1 Realism |
-| `flux-pro-plus` | Flux.1.1 |
-| `flux-kontext` | Flux.1 Kontext Pro |
-| `flux-kontext-high` | Flux.1 Kontext Max |
-| `flux-sref` | Flux.1 Sref |
-| `flux-2` | Flux.2 Pro |
-| `flux-2-klein` | Flux.2 Klein |
-| `fast` | Classic Fast |
-| `classic` | Classic |
-| `mystic` | Mystic 1.0 |
-| `mystic-2-5` | Mystic 2.5 |
-| `mystic-2-5-flexible` | Mystic 2.5 Flexible |
-| `mystic-2-5-fluid` | Mystic 2.5 Fluid |
-| `mystic-lora` | Mystic Lora |
-| `mystic-sref` | Mystic Sref |
-| `seedream-5-lite` | Seedream 5 Lite |
-| `seedream-4-5` | Seedream 4.5 |
-| `seedream-4-5-4k` | Seedream 4.5 4K |
-| `seedream-4` | Seedream 4 |
-| `seedream-4-4k` | Seedream 4 4K |
-| `seedream` | Seedream |
-| `imagen-nano-banana` | Google Nano Banana |
-| `imagen-nano-banana-2` | Google Nano Banana Pro |
-| `ideogram` | Ideogram |
-| `ideogram-character` | Ideogram Character |
-| `grok` | Grok |
-| `grok-edit` | Grok Edit |
-| `qwen` | Qwen |
-| `qwen-edit` | Qwen Edit |
-| `reve` | Reve |
-| `recraft-v4` | Recraft V4 |
-| `recraft-v4-1` | Recraft V4.1 |
-| `z-image` | Z-Image |
+### Unlimited — 34 models (no credits on Premium+/Pro)
 
-### Credit-Based
+| Model ID | Name | refs | max | Resolutions |
+|---|---|---|---|---|
+| `auto` | Auto | ✅ | 4 | default |
+| **Flux.1 family** | | | | |
+| `flux` | Flux.1 Fast | — | 12 | default |
+| `flux-dev` | Flux.1 | ✅ | 8 | default |
+| `flux-realism` | Flux.1 Realism | — | 12 | default |
+| `flux-pro-plus` | Flux.1.1 | — | 12 | default |
+| `flux-kontext` | Flux.1 Kontext Pro | ✅ | 8 | default |
+| `flux-kontext-high` | Flux.1 Kontext Max | ✅ | 2 | default |
+| **Flux.2 family** | | | | |
+| `flux-2` | Flux.2 Pro | ✅ | 2 | 1K, 2K |
+| `flux-2-klein` | Flux.2 Klein | ✅ | 2 | 1K, 2K |
+| `flux-2-flex` | Flux.2 Flex | ✅ | 4 | 1K, 2K |
+| **Classic** | | | | |
+| `fast` | Classic Fast | — | 12 | default |
+| `classic` | Classic | — | 12 | default |
+| **Mystic family** | | | | |
+| `mystic` | Mystic 1.0 | ✅ | 8 | default |
+| `mystic-2-5` | Mystic 2.5 | ✅ | 8 | default |
+| `mystic-2-5-flexible` | Mystic 2.5 Flexible | — | 12 | default |
+| `mystic-2-5-fluid` | Mystic 2.5 Fluid | — | 8 | default |
+| **Seedream family** | | | | |
+| `seedream-4-5` | Seedream 4.5 | ✅ | 4 | 2K, 4K |
+| `seedream-4` | Seedream 4 | ✅ | 4 | default |
+| `seedream-4-4k` | Seedream 4 4K | ✅ | 4 | default |
+| `seedream` | Seedream | ✅ | 4 | default |
+| **Google** | | | | |
+| `imagen-nano-banana` | Google Nano Banana | ✅ | 4 | default |
+| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | ✅ | 4 | 1K, 2K, **4K** |
+| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | ✅ | 4 | 1K, 2K, **4K** |
+| `imagen3` | Google Imagen 3 | — | 12 | default |
+| `imagen4-fast` | Google Imagen 4 Fast | — | 8 | default |
+| `imagen4` | Google Imagen 4 | — | 1 | default |
+| `imagen4-ultra` | Google Imagen 4 Ultra | — | 1 | default |
+| **Other** | | | | |
+| `ideogram` | Ideogram | ✅ | 2 | default |
+| `z-image` | Z-Image | — | 8 | default |
+| `gpt-medium` | GPT | ✅ | 1 | default |
+| `gpt-high` | GPT 1 - HQ | ✅ | 1 | default |
+| `recraft-v4-1` | Recraft V4.1 | — | 4 | default |
+| `runway-gen4` | Runway *(deprecated — still works)* | ✅ | 2 | default |
+| `reve` | Reve *(currently inactive)* | ✅ | 8 | default |
 
-| Model ID | Name | Credits/image |
-|---|---|---|
-| `imagen-nano-banana-2-4k` | Google Nano Banana Pro 4K | 150 |
-| `imagen-nano-banana-2-flash-2k` | Google Nano Banana Pro 2K | 75 |
-| `imagen-nano-banana-2-flash-4k` | Google Nano Banana Pro Flash 4K | 150 |
-| `flux-2-flex` | Flux.2 Flex | 40 |
-| `flux-2-max` | Flux.2 Max | 65 |
-| `recraft-v4-pro` | Recraft V4 Pro | 175 |
-| `gpt-medium` | GPT | 150 |
-| `gpt-high` | GPT 1 - HQ | 500 |
-| `gpt-1-5-medium` | GPT 1.5 | 150 |
-| `gpt-1-5-high` | GPT 1.5 - High | 500 |
-| `gpt-2` | GPT 2 | 200 |
+> **Resolution tiers** for Nano Banana 2, Nano Banana Pro, Seedream 4.5: the `resolution` param controls output quality. `4K` produces the largest images. No separate model ID is needed — same model ID, different `resolution` value.
+
+> **`gpt-medium` and `gpt-high`** are unlimited (Premium+ users can generate at no credit cost). Do **not** confuse with `gpt-1-5-medium`/`gpt-1-5-high` which are credit-based.
+
+> **`recraft-v4-1`** is a hidden backend mode — not shown in Magnific's UI but confirmed valid. `recraft-v4` is the standard credit-based version.
+
+### Credit-Based — 9 models (deduct credits even on Premium+)
+
+| Model ID | Name | Credits | refs | max | Resolutions |
+|---|---|---|---|---|---|
+| `flux-2-max` | Flux.2 Max | 65 | ✅ | 1 | 1K, 2K |
+| `seedream-5-lite` | Seedream 5 Lite | varies | ✅ | 4 | 2K, 3K |
+| `qwen` | Qwen | varies | ✅ | 2 | default |
+| `grok` | Grok | varies | ✅ | 8 | default |
+| `recraft-v4` | Recraft V4 | varies | — | 4 | default |
+| `recraft-v4-pro` | Recraft V4 Pro | 175 | — | 4 | default |
+| `gpt-1-5-medium` | GPT 1.5 | 150 | ✅ | 1 | default |
+| `gpt-1-5-high` | GPT 1.5 - High | 500 | ✅ | 1 | default |
+| `gpt-2` | GPT 2 | 200 | ✅ | 1 | 1K, 2K, **4K** |
+
+> **"varies"** — `seedream-5-lite`, `qwen`, `grok`, and `recraft-v4` consume credits but their exact per-image cost is not exposed in the API. Check the Magnific billing page for current rates.
+
+> **Removed invalid models (2026-06-08):** `flux-sref`, `mystic-lora`, `mystic-sref`, `seedream-4-5-4k`, `ideogram-character`, `grok-edit`, `qwen-edit`, `imagen-nano-banana-2-4k`, `imagen-nano-banana-2-flash-2k`, `imagen-nano-banana-2-flash-4k` — all confirmed invalid (Magnific returns 422 "The selected mode is invalid"). Resolution variants (4K etc.) are a **parameter**, not separate model IDs.
 
 ---
 
 ## Video Models
 
-Use any of these `id` values as the `model` field in `/v1/videos/generate`. Check `features` from `GET /v1/models?type=video` to know which models support `start_image`, `end_image`, `references`.
+Use any of these `id` values as the `model` field in `/v1/videos/generate`. All data verified against Magnific's live API 2026-06-08.
 
-| Model ID | Name | Credits | sf | ef | refs |
-|---|---|---|---|---|---|
-| `bytedance-seedance-fast-2.0` | Seedance 2.0 Fast | 44 | ✅ | ✅ | ✅ |
-| `bytedance-seedance-pro-2.0` | Seedance 2.0 Pro | 57 | ✅ | ✅ | ✅ |
-| `bytedance-seedance-pro-1.5` | Seedance 1.5 Pro | 180 | ✅ | ✅ | — |
-| `bytedance-omnihuman-lipsync` | Omni Human 1.5 | 540 | ✅ | — | — |
-| `kling-30` | Kling 3.0 | 210 | ✅ | ✅ | — |
-| `kling-omni3` | Kling 3.0 Omni | 210 | ✅ | ✅ | ✅ |
-| `kling-motion-control-30` | Kling 3.0 Motion Control | 330 | ✅ | — | — |
-| `kling-26` | Kling 2.6 | 225 | ✅ | ✅ | — |
-| `kling-motion-control` | Kling 2.6 Motion Control | 150 | ✅ | — | — |
-| `kling-25` | **Kling 2.5 (∞ Unlimited)** | 0 | ✅ | ✅ | — |
-| `kling-21` | Kling 2.1 | 275 | ✅ | ✅ | — |
-| `kling-21-master` | Kling 2.1 Master | 1400 | ✅ | — | — |
-| `kling-omni1` | Kling O1 | 225 | ✅ | ✅ | ✅ |
-| `minimax-video-2_3` | **MiniMax Hailuo 2.3 (∞ Unlimited)** | 0 | ✅ optional | — | — |
-| `minimax-video-2_3-fast` | **MiniMax Hailuo 2.3 Fast (∞ Unlimited)** | 0 | ✅ **required** | — | — |
-| `minimax-video-02` | MiniMax Hailuo 02 | 60 | ✅ | ✅ | — |
-| `minimax-video-01-live2d` | MiniMax Live Illustrations | 600 | ✅ | — | — |
-| `wan-2-7` | Wan 2.7 | 260 | ✅ | ✅ | ✅ |
-| `wan-2-6` | Wan 2.6 | 1000 | ✅ | — | — |
-| `wan-2-5` | Wan 2.5 | 500 | ✅ | — | — |
-| `wan-2-2` | **Wan 2.2 (∞ Unlimited, 480p max)** | 0 | ✅ **required** | — | — |
-| `wan-2-2-animate` | Wan 2.2 Animate Move | 600 | — | — | ✅ |
-| `pixverse-6` | PixVerse 6 | 100 | ✅ | ✅ | — |
-| `pixverse-5-5` | PixVerse 5.5 | 500 | ✅ | ✅ | — |
-| `runway-gen45` | Runway Gen-4.5 | 1100 | ✅ | — | — |
-| `runway-std` | Runway Gen 4 | 500 | ✅ | — | — |
-| `runway-act-two` | Runway Act Two | 300 | — | — | ✅ |
-| `google-veo3_1` | Google Veo 3.1 | 800 | ✅ | ✅ | ✅ |
-| `google-veo3_1-fast` | Google Veo 3.1 Fast | 400 | ✅ | ✅ | — |
-| `google-veo3_1-lite` | Google Veo 3.1 Lite | 160 | ✅ | ✅ | — |
-| `google-veo3` | Google Veo 3 | 800 | ✅ | — | — |
-| `google-veo3-fast` | Google Veo 3 Fast | 400 | ✅ | — | — |
-| `google-veo2` | Google Veo 2 | 1000 | ✅ | ✅ | — |
-| `openai-sora2-pro` | OpenAI Sora 2 Pro | 1800 | ✅ | — | — |
-| `openai-sora2-standard` | OpenAI Sora 2 | 600 | ✅ | — | — |
-| `grok-default` | Grok Video | 80 | ✅ | — | — |
-| `ltx-ltx2-fast` | LTX 2 Fast | 480 | ✅ | — | — |
-| `ltx-ltx2-pro` | LTX 2 Pro | 720 | ✅ | — | — |
-| `veed-fabric-1.0` | Veed Fabric 1.0 | 420 | ✅ | — | — |
-| `veed-fabric-1.0-fast` | Veed Fabric 1.0 Fast | 540 | ✅ | — | — |
-| `happy-horse-1` | Happy Horse | 720 | ✅ | — | ✅ |
-| `happy-horse-1-edit` | Happy Horse Edit | 720 | — | — | ✅ |
+**Column key:**
+- `Credits` — credits consumed per generation (0 = free/unlimited on plan)
+- `sf` — `start_image` supported (✅ = optional, ⚠️ = **required**)
+- `ef` — `end_image` supported
+- `refs` — `references[]` supported (number = max allowed)
+- `Resolutions` — output resolutions available (first = highest quality)
+- `Duration (s)` — available clip lengths in seconds
 
-**sf** = start image (image-to-video), **ef** = end image, **refs** = reference media
+### Unlimited video models (free on plan)
 
-> **`wan-2-2` note:** `start_image` is **required** — omitting it returns HTTP 400. Resolution is capped at **480p** regardless of what you pass.
->
-> **MiniMax Hailuo 2.3 notes:**
-> - `minimax-video-2_3` — text-to-video (start_image optional). Always generates at **768p, 6 seconds** regardless of `resolution`/`duration` values passed.
-> - `minimax-video-2_3-fast` — image-to-video, `start_image` is **required** — omitting it returns HTTP 400. Same 768p/6s defaults apply.
-> - `sound_effects` is ignored for both MiniMax models (they don't support it).
+| Model ID | Name | sf | ef | refs | Resolutions | Duration (s) | Free resolution |
+|---|---|---|---|---|---|---|---|
+| `kling-25` | Kling 2.5 | ✅ | ✅ | — | 1080p, 720p | 5, 10 | 720p |
+| `minimax-video-2_3` | MiniMax Hailuo 2.3 | ✅ | — | — | 1080p, 768p | 6, 10 | 768p |
+| `minimax-video-2_3-fast` | MiniMax Hailuo 2.3 Fast | ⚠️ | — | — | 1080p, 768p | 6, 10 | 768p |
+| `wan-2-2` | Wan 2.2 | ⚠️ | — | — | 720p, 580p, 480p | 5, 10 | 480p |
+
+> **Free resolution** = quality used when generating without extra credits. Higher resolutions cost credits.
+> **`minimax-video-2_3`** always defaults to 768p/6s. **`wan-2-2`** and **`minimax-video-2_3-fast`** require `start_image` — omitting returns HTTP 400.
+
+### ByteDance
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `bytedance-seedance-fast-2.0` | Seedance 2.0 Fast | 44 | ✅ | ✅ | ✅ up to 9 | 720p, 480p | 4–15 |
+| `bytedance-seedance-pro-2.0` | Seedance 2.0 | 57 | ✅ | ✅ | ✅ up to 9 | 1080p, 720p, 480p | 4–15 |
+| `bytedance-seedance-pro-1.5` | Seedance 1.5 Pro | 180 | ✅ | ✅ | — | 1080p, 720p, 480p | 4–12 |
+| `bytedance-omnihuman-lipsync` | Omni Human 1.5 | 540 | ⚠️ | — | — | — | 3, 30 |
+
+### Kling
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `kling-30` | Kling 3.0 | 210 | ✅ | ✅ | — | **4K**, 1080p, 720p | 3–15 |
+| `kling-omni3` | Kling 3.0 Omni | 210 | ✅ | ✅ | ✅ up to 7 | **4K**, 1080p, 720p | 3–15 |
+| `kling-motion-control-30` | Kling 3.0 Motion Control | 330 | ⚠️ | — | — | 1080p, 720p | 3–15 |
+| `kling-26` | Kling 2.6 | 225 | ✅ | ✅ | — | 1080p | 5, 10 |
+| `kling-motion-control` | Kling 2.6 Motion Control | 150 | ⚠️ | — | — | 1080p, 720p | 3–10 |
+| `kling-omni1` | Kling O1 | 225 | ✅ | ✅ | ✅ up to 7 | 1080p, 720p | 3–10 |
+| `kling-21` | Kling 2.1 | 275 | ⚠️ | ✅ | — | 1080p, 720p | 5, 10 |
+| `kling-21-master` | Kling 2.1 Master | 1400 | ✅ | — | — | 1080p | 5, 10 |
+
+### Google
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `google-veo3_1` | Google Veo 3.1 | 800 | ✅ | ✅ | ✅ up to 3 | **4K**, 1080p, 720p | 4, 6, 8 |
+| `google-veo3_1-fast` | Google Veo 3.1 Fast | 400 | ✅ | ✅ | — | **4K**, 1080p, 720p | 4, 6, 8 |
+| `google-veo3_1-lite` | Google Veo 3.1 Lite | 160 | ✅ | ✅ | — | 1080p, 720p | 4, 6, 8 |
+| `google-veo3` | Google Veo 3 | 800 | ✅ | — | — | 1080p, 720p | 4, 6, 8 |
+| `google-veo3-fast` | Google Veo 3 Fast | 400 | ✅ | — | — | 1080p, 720p | 4, 6, 8 |
+| `google-veo2` | Google Veo 2 | 1000 | ✅ | ✅ | — | 720p | 5, 6, 7, 8 |
+
+### MiniMax
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `minimax-video-02` | MiniMax Hailuo 02 | 60 | ✅ | ✅ | — | 1080p, 768p, 512p | 6 |
+| `minimax-video-01-live2d` | MiniMax Live Illustrations | 600 | ⚠️ | — | — | 720p | 5 |
+
+### PixVerse
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `pixverse-6` | PixVerse 6 | 100 | ✅ | ✅ | — | 1080p, 720p, 540p, 360p | 1–15 |
+| `pixverse-5-5` | PixVerse 5.5 | 500 | ✅ | ✅ | — | 1080p, 720p, 540p, 360p | 5, 8, 10 |
+
+### Runway
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `runway-gen45` | Runway Gen-4.5 | 1100 | ✅ | — | — | 720p | 5, 8, 10 |
+| `runway-std` | Runway Gen 4 | 500 | ⚠️ | — | — | 720p | 5, 10 |
+| `runway-act-two` | Runway Act Two | 300 | — | — | ✅ up to 2 | 720p | 3, 30 |
+
+### Wan
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `wan-2-7` | Wan 2.7 | 260 | ✅ | ✅ | ✅ up to 5 | 1080p, 720p | 2–15 |
+| `wan-2-6` | Wan 2.6 | 1000 | ✅ | — | — | 1080p, 720p | 5, 10, 15 |
+| `wan-2-5` | Wan 2.5 | 500 | ✅ | — | — | 1080p, 720p, 480p | 5, 10 |
+| `wan-2-2-animate` | Wan 2.2 Animate Move | 600 | — | — | ✅ up to 2 | 720p, 580p, 480p | 3, 30 |
+| `happy-horse-1` | Happy Horse | 720 | ✅ | — | ✅ up to 9 | 1080p, 720p | 3–15 |
+| `happy-horse-1-edit` | Happy Horse Edit | 720 | — | — | ✅ up to 5 | 1080p, 720p | 3–15 |
+
+### LTX
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `ltx-ltx2-fast` | LTX 2 Fast | 480 | ✅ | — | — | **2160p**, 1440p, 1080p | 6, 8, 10, 12, 14, 16, 18, 20 |
+| `ltx-ltx2-pro` | LTX 2 Pro | 720 | ✅ | — | — | **2160p**, 1440p, 1080p | 6, 8, 10 |
+
+### OpenAI Sora
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `openai-sora2-pro` | OpenAI Sora 2 Pro | 1800 | ✅ | — | — | 1080p, 1024p, 720p | 4, 8, 12, 16, 20 |
+| `openai-sora2-standard` | OpenAI Sora 2 | 600 | ✅ | — | — | 720p | 4, 8, 12, 16, 20 |
+
+### Grok
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `grok-default` | Grok | 80 | ✅ | — | — | 720p, 480p | 1–15 |
+
+### Veed Fabric
+
+| Model ID | Name | Credits | sf | ef | refs | Resolutions | Duration (s) |
+|---|---|---|---|---|---|---|---|
+| `veed-fabric-1.0` | Veed Fabric 1.0 | 420 | ⚠️ | — | — | 720p, 480p | 3, 300 |
+| `veed-fabric-1.0-fast` | Veed Fabric 1.0 Fast | 540 | ⚠️ | — | — | 720p, 480p | 3, 300 |
+
+---
+
+### Video Model Notes
+
+**`sf` column:**
+- ✅ = `start_image` supported and **optional** (text-to-video works without it)
+- ⚠️ = `start_image` is **required** — omitting it returns HTTP 400. Affected models: `bytedance-omnihuman-lipsync`, `kling-21`, `kling-motion-control`, `kling-motion-control-30`, `minimax-video-01-live2d`, `minimax-video-2_3-fast`, `runway-std`, `veed-fabric-1.0`, `veed-fabric-1.0-fast`, `wan-2-2`
+
+**refs column** — `references[]` are media clips used as style/character anchors, not start frames. Format:
+```json
+"references": [{ "type": "image", "url": "https://..." }]
+```
+The number shown (e.g. "up to 9") is the maximum number of reference items the model accepts.
+
+**Resolutions** — pass as the `resolution` field. The first listed is the highest quality. Lower resolutions are faster and cheaper. For unlimited models, the "Free resolution" column shows which tier is included at no credit cost.
+
+**Duration** — ranges shown as "3–15" mean every integer second in that range is valid. Discrete lists (e.g. "5, 10") mean only those exact values are accepted.
+
+**Notable highlights:**
+- `kling-30`, `kling-omni3`, `google-veo3_1`, `google-veo3_1-fast` support **4K** output
+- `ltx-ltx2-fast` and `ltx-ltx2-pro` support up to **2160p (4K)** and up to **20s** duration
+- `veed-fabric-1.0` supports up to **300s** duration
+- `pixverse-6` accepts **1–15s** in 1-second steps
+- `openai-sora2-pro` supports up to **20s** at 1080p/1024p/720p
 
 ---
 
@@ -1222,10 +1375,25 @@ curl -X POST $BASE/v1/images/describe \
 - **Always use async** — submit job, get `job_id` immediately, poll until done. Use `?wait=true` only for quick scripts or testing
 - **Poll with `retry_after`** — the response tells you how often to poll: 3s for images, 5s for audio, 10s for video. Don't poll faster than this
 - **Jobs expire in 2 hours** — once `status === "completed"` store the `result.url` immediately; the job entry and CDN URL both expire
-- **Start with unlimited models** — `flux-2`, `mystic-2-5`, `kling-25`, `minimax-video-2_3` cost no credits and work out of the box
-- **`wan-2-2`** requires `start_image`, caps at 480p — use `kling-25` for text-only unlimited video
-- **`minimax-video-2_3`** = text-to-video 768p/6s free; **`minimax-video-2_3-fast`** = image-to-video 768p/6s free (start_image required)
-- **Credit routing is automatic** — zero-credit accounts are skipped for paid models; funded accounts are picked first
-- **CDN links expire ~24h** — download and store if needed long-term
+- **Credit routing is automatic** — zero-credit accounts are skipped for credit-based models; the server picks the best funded account automatically
+
+### Image tips
+- **Start with unlimited image models** — `flux-2`, `mystic-2-5`, `imagen-nano-banana-2-flash`, `auto` cost no credits and work out of the box
+- **4K image generation** — use `imagen-nano-banana-2-flash` or `imagen-nano-banana-2` with `"resolution": "4k"`, or `gpt-2` (credit-based) — same model ID, different resolution param
+- **Reference images (`refs: true`)** — pass `references: [{"type": "image", "url": "..."}]`. Supported by 28 of 43 image models. Check the table in [Image Models](#image-models)
+- **`gpt-medium` and `gpt-high`** are unlimited (no credits) — don't confuse with `gpt-1-5-medium`/`gpt-1-5-high` which cost credits
+- **`flux-2-flex`** is unlimited (not credit-based) and supports 1K/2K output
+
+### Video tips
+- **Unlimited video** — `kling-25` (text-to-video, up to 1080p), `minimax-video-2_3` (text-to-video 768p/6s), `wan-2-2` (image-to-video, 480p, start_image required), `minimax-video-2_3-fast` (image-to-video, 768p, start_image required)
+- **`start_image` required models** — `wan-2-2`, `minimax-video-2_3-fast`, `kling-21`, `kling-motion-control`, `kling-motion-control-30`, `bytedance-omnihuman-lipsync`, `minimax-video-01-live2d`, `runway-std`, `veed-fabric-1.0`, `veed-fabric-1.0-fast` — omitting `start_image` on these returns HTTP 400
+- **4K video** — `kling-30`, `kling-omni3`, `google-veo3_1`, `google-veo3_1-fast` support 4K; LTX models support 2160p
+- **Long-form video** — `veed-fabric-1.0/fast` supports up to 300s; `openai-sora2` supports up to 20s; LTX up to 20s; Grok and PixVerse 6 support 1–15s in 1s steps
+- **Reference media in video** — models supporting `refs` accept style/character anchors, not just start frames. Check `refs_limit` for the max count per model
+- **Always check `GET /v1/models?type=video`** — `resolutions` and `durations` arrays tell you exactly which values are valid for each model
+
+### General
 - **`revised_prompt`** — Magnific may enhance your prompt; the actual prompt used is in the result
+- **CDN links expire ~24h** — download and store if needed long-term
 - **Check capacity** — `GET /health` shows live slot availability; `GET /v1/jobs` shows queued/running jobs
+- **Add accounts to scale** — each account adds 20 concurrent slots; credit accounts are automatically balanced
