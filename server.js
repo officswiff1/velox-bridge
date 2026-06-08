@@ -103,7 +103,7 @@ const IMAGE_MODELS = [
   { id: "flux-pro-plus",         name: "Flux.1.1",                      unlimited: true  },
   { id: "flux-kontext",          name: "Flux.1 Kontext Pro",            unlimited: true  },
   { id: "flux-kontext-high",     name: "Flux.1 Kontext Max",            unlimited: true  },
-  { id: "flux-sref",             name: "Flux.1 Sref",                   unlimited: true,  note: "Style reference — works best with references[]" },
+  // flux-sref removed — confirmed invalid (422) via live Magnific probe 2026-06-08
   // Flux.2 family
   { id: "flux-2",                name: "Flux.2 Pro",                    unlimited: true  },
   { id: "flux-2-klein",          name: "Flux.2 Klein",                  unlimited: true  },
@@ -115,29 +115,29 @@ const IMAGE_MODELS = [
   { id: "mystic-2-5",            name: "Mystic 2.5",                    unlimited: true  },
   { id: "mystic-2-5-flexible",   name: "Mystic 2.5 Flexible",           unlimited: true  },
   { id: "mystic-2-5-fluid",      name: "Mystic 2.5 Fluid",              unlimited: true  },
-  { id: "mystic-lora",           name: "Mystic Lora",                   unlimited: true,  note: "LoRA style — works best with references[]" },
-  { id: "mystic-sref",           name: "Mystic Sref",                   unlimited: true,  note: "Style reference — works best with references[]" },
+  // mystic-lora, mystic-sref removed — confirmed invalid (422) via live probe 2026-06-08
   // Seedream family
   { id: "seedream-5-lite",       name: "Seedream 5 Lite",               unlimited: true  },
   { id: "seedream-4-5",          name: "Seedream 4.5",                  unlimited: true  },
-  { id: "seedream-4-5-4k",       name: "Seedream 4.5 4K",               unlimited: true  },
+  // seedream-4-5-4k removed — confirmed invalid (422) via live probe 2026-06-08
   { id: "seedream-4",            name: "Seedream 4",                    unlimited: true  },
   { id: "seedream-4-4k",         name: "Seedream 4 4K",                 unlimited: true  },
   { id: "seedream",              name: "Seedream",                      unlimited: true  },
-  // Google
-  { id: "imagen-nano-banana",    name: "Google Nano Banana",            unlimited: true  },
-  { id: "imagen-nano-banana-2",  name: "Google Nano Banana Pro",        unlimited: true,  note: "∞ on Premium+ (1K/period via flash-1k bucket); 75 credits otherwise" },
+  // Google — mode IDs verified via /app/api/tti-modes 2026-06-08
+  { id: "imagen-nano-banana",          name: "Google Nano Banana",            unlimited: true  },
+  { id: "imagen-nano-banana-2-flash",  name: "Google Nano Banana 2",          unlimited: true,  note: "Gemini 3.1 Flash — unlimited at 1K/2K on Premium+/Pro" },
+  { id: "imagen-nano-banana-2",        name: "Google Nano Banana Pro",        unlimited: true,  note: "Gemini 3.0 Pro — unlimited at 1K/2K on Premium+" },
   { id: "imagen3",               name: "Google Imagen 3 (Deprecated)",  unlimited: true  },
   { id: "imagen4",               name: "Google Imagen 4 (Deprecated)",  unlimited: true  },
   { id: "imagen4-fast",          name: "Google Imagen 4 Fast (Deprecated)", unlimited: true },
   { id: "imagen4-ultra",         name: "Google Imagen 4 Ultra (Deprecated)", unlimited: true },
   // Other unlimited
   { id: "ideogram",              name: "Ideogram",                      unlimited: true  },
-  { id: "ideogram-character",    name: "Ideogram Character",            unlimited: true  },
+  // ideogram-character removed — confirmed invalid (422) via live probe 2026-06-08
   { id: "grok",                  name: "Grok",                          unlimited: true  },
-  { id: "grok-edit",             name: "Grok Edit",                     unlimited: true,  note: "Image editing — works best with references[]" },
+  // grok-edit removed — confirmed invalid (422) via live probe 2026-06-08
   { id: "qwen",                  name: "Qwen",                          unlimited: true  },
-  { id: "qwen-edit",             name: "Qwen Edit",                     unlimited: true,  note: "Image editing — works best with references[]" },
+  // qwen-edit removed — confirmed invalid (422) via live probe 2026-06-08
   { id: "reve",                  name: "Reve",                          unlimited: true  },
   { id: "recraft-v4",            name: "Recraft V4",                    unlimited: true  },
   { id: "recraft-v4-1",          name: "Recraft V4.1",                  unlimited: true,  note: "100 generations/period cap" },
@@ -2836,24 +2836,6 @@ app.get("/v1/models", (req, res) => {
   });
 });
 
-// ── POST /admin/probe-mode (temp debug) ───────────────────────────────────────
-// Calls start-tti-v2 directly with any mode string and returns Magnific's raw response.
-// Used to discover correct mode IDs. Remove once IDs confirmed.
-app.post('/admin/probe-mode', auth, async (req, res) => {
-  const { mode } = req.body || {};
-  if (!mode) return res.status(400).json({ error: 'mode required' });
-  const pool = manager.getPool();
-  if (!pool.length) return res.status(503).json({ error: 'No active accounts' });
-  const acc = pool[0];
-  await refreshSession(acc);
-  const { status, json, text } = await apiRequest(
-    'POST',
-    `/app/api/start-tti-v2?lang=en_US&user_id=${acc.userId}`,
-    { mode, prompt: 'test', references: [], num_images: 1, aspect_ratio: '1:1', variations: false, force_credits: false },
-    acc
-  );
-  res.json({ mode, account: acc.name, status, magnific: json || text.slice(0, 300) });
-});
 
 // ── GET /health ───────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
