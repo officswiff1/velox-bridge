@@ -89,78 +89,98 @@ function adminAuthMiddleware(req, res, next) {
 }
 
 // ── Image models ──────────────────────────────────────────────────────────────
-// unlimited: true  = included in Premium+ (no credits consumed)
-// unlimited: false = costs credits even on Premium+
-// id = value sent as `mode` in start-tti-v2 and render/v4
-// Names match the Magnific UI (verified 2026-05-21, 43 visible models)
+// unlimited   : true  = included in Premium+/Pro (no credits consumed)
+// unlimited   : false = credit-based even on Premium+ (credits = cost per generation)
+// refs        : true  = supports references[] image input in API
+// resolutions : array of resolution tiers beyond default (e.g. ['1k','2k','4k'])
+// maxImages   : max images per generation on unlimited plan
+// All mode IDs verified via Magnific /app/api/tti-modes 2026-06-08
 const IMAGE_MODELS = [
-  // ── Unlimited (Premium+ — no credits consumed) ────────────────────────────
-  { id: "auto",                  name: "Auto",                          unlimited: true,  note: "Magnific picks best model automatically" },
+  // ── Unlimited (Premium+/Pro — no credits consumed) ─────────────────────────
+
+  // Auto
+  { id: "auto",                 name: "Auto",                         unlimited: true,  refs: true,  maxImages: 4,  note: "Magnific picks best model automatically" },
+
   // Flux.1 family
-  { id: "flux",                  name: "Flux.1 Fast",                   unlimited: true  },
-  { id: "flux-dev",              name: "Flux.1",                        unlimited: true  },
-  { id: "flux-realism",          name: "Flux.1 Realism",                unlimited: true  },
-  { id: "flux-pro-plus",         name: "Flux.1.1",                      unlimited: true  },
-  { id: "flux-kontext",          name: "Flux.1 Kontext Pro",            unlimited: true  },
-  { id: "flux-kontext-high",     name: "Flux.1 Kontext Max",            unlimited: true  },
-  // flux-sref removed — confirmed invalid (422) via live Magnific probe 2026-06-08
-  // Flux.2 family
-  { id: "flux-2",                name: "Flux.2 Pro",                    unlimited: true  },
-  { id: "flux-2-klein",          name: "Flux.2 Klein",                  unlimited: true  },
+  { id: "flux",                 name: "Flux.1 Fast",                  unlimited: true,  refs: false, maxImages: 12 },
+  { id: "flux-dev",             name: "Flux.1",                       unlimited: true,  refs: true,  maxImages: 8  },
+  { id: "flux-realism",         name: "Flux.1 Realism",               unlimited: true,  refs: false, maxImages: 12 },
+  { id: "flux-pro-plus",        name: "Flux.1.1",                     unlimited: true,  refs: false, maxImages: 12 },
+  { id: "flux-kontext",         name: "Flux.1 Kontext Pro",           unlimited: true,  refs: true,  maxImages: 8  },
+  { id: "flux-kontext-high",    name: "Flux.1 Kontext Max",           unlimited: true,  refs: true,  maxImages: 2  },
+  // flux-sref removed — confirmed invalid (422) via live probe 2026-06-08
+
+  // Flux.2 family (flux-2-flex confirmed unlimited via tti-modes badgeTooltips)
+  { id: "flux-2",               name: "Flux.2 Pro",                   unlimited: true,  refs: true,  maxImages: 2,  resolutions: ['1k','2k'] },
+  { id: "flux-2-klein",         name: "Flux.2 Klein",                 unlimited: true,  refs: true,  maxImages: 2,  resolutions: ['1k','2k'] },
+  { id: "flux-2-flex",          name: "Flux.2 Flex",                  unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'] },
+
   // Classic
-  { id: "fast",                  name: "Classic Fast",                  unlimited: true  },
-  { id: "classic",               name: "Classic",                       unlimited: true  },
+  { id: "fast",                 name: "Classic Fast",                  unlimited: true,  refs: false, maxImages: 12 },
+  { id: "classic",              name: "Classic",                       unlimited: true,  refs: false, maxImages: 12 },
+
   // Mystic family
-  { id: "mystic",                name: "Mystic 1.0",                    unlimited: true  },
-  { id: "mystic-2-5",            name: "Mystic 2.5",                    unlimited: true  },
-  { id: "mystic-2-5-flexible",   name: "Mystic 2.5 Flexible",           unlimited: true  },
-  { id: "mystic-2-5-fluid",      name: "Mystic 2.5 Fluid",              unlimited: true  },
+  { id: "mystic",               name: "Mystic 1.0",                   unlimited: true,  refs: true,  maxImages: 8  },
+  { id: "mystic-2-5",           name: "Mystic 2.5",                   unlimited: true,  refs: true,  maxImages: 8  },
+  { id: "mystic-2-5-flexible",  name: "Mystic 2.5 Flexible",          unlimited: true,  refs: false, maxImages: 12 },
+  { id: "mystic-2-5-fluid",     name: "Mystic 2.5 Fluid",             unlimited: true,  refs: false, maxImages: 8  },
   // mystic-lora, mystic-sref removed — confirmed invalid (422) via live probe 2026-06-08
-  // Seedream family
-  { id: "seedream-5-lite",       name: "Seedream 5 Lite",               unlimited: true  },
-  { id: "seedream-4-5",          name: "Seedream 4.5",                  unlimited: true  },
+
+  // Seedream family (seedream-5-lite is credit-based — moved below)
+  { id: "seedream-4-5",         name: "Seedream 4.5",                 unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','4k'] },
+  { id: "seedream-4",           name: "Seedream 4",                   unlimited: true,  refs: true,  maxImages: 4  },
+  { id: "seedream-4-4k",        name: "Seedream 4 4K",                unlimited: true,  refs: true,  maxImages: 4  },
+  { id: "seedream",             name: "Seedream",                     unlimited: true,  refs: true,  maxImages: 4  },
   // seedream-4-5-4k removed — confirmed invalid (422) via live probe 2026-06-08
-  { id: "seedream-4",            name: "Seedream 4",                    unlimited: true  },
-  { id: "seedream-4-4k",         name: "Seedream 4 4K",                 unlimited: true  },
-  { id: "seedream",              name: "Seedream",                      unlimited: true  },
-  // Google — mode IDs verified via /app/api/tti-modes 2026-06-08
-  { id: "imagen-nano-banana",          name: "Google Nano Banana",            unlimited: true  },
-  { id: "imagen-nano-banana-2-flash",  name: "Google Nano Banana 2",          unlimited: true,  note: "Gemini 3.1 Flash — unlimited at 1K/2K on Premium+/Pro" },
-  { id: "imagen-nano-banana-2",        name: "Google Nano Banana Pro",        unlimited: true,  note: "Gemini 3.0 Pro — unlimited at 1K/2K on Premium+" },
-  { id: "imagen3",               name: "Google Imagen 3 (Deprecated)",  unlimited: true  },
-  { id: "imagen4",               name: "Google Imagen 4 (Deprecated)",  unlimited: true  },
-  { id: "imagen4-fast",          name: "Google Imagen 4 Fast (Deprecated)", unlimited: true },
-  { id: "imagen4-ultra",         name: "Google Imagen 4 Ultra (Deprecated)", unlimited: true },
+
+  // Google — all 3 Nano Banana variants confirmed active via /app/api/tti-modes 2026-06-08
+  // Resolution tiers (1k/2k/4k) are passed as a parameter — not separate mode IDs
+  { id: "imagen-nano-banana",         name: "Google Nano Banana",           unlimited: true,  refs: true,  maxImages: 4  },
+  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k','4k'], note: "Gemini 3.1 Flash" },
+  { id: "imagen-nano-banana-2",       name: "Google Nano Banana Pro",       unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k','4k'], note: "Gemini 3.0 Pro" },
+  { id: "imagen3",              name: "Google Imagen 3",              unlimited: true,  refs: false, maxImages: 12 },
+  { id: "imagen4-fast",         name: "Google Imagen 4 Fast",         unlimited: true,  refs: false, maxImages: 8  },
+  { id: "imagen4",              name: "Google Imagen 4",              unlimited: true,  refs: false, maxImages: 1  },
+  { id: "imagen4-ultra",        name: "Google Imagen 4 Ultra",        unlimited: true,  refs: false, maxImages: 1  },
+
   // Other unlimited
-  { id: "ideogram",              name: "Ideogram",                      unlimited: true  },
+  { id: "ideogram",             name: "Ideogram",                     unlimited: true,  refs: true,  maxImages: 2  },
   // ideogram-character removed — confirmed invalid (422) via live probe 2026-06-08
-  { id: "grok",                  name: "Grok",                          unlimited: true  },
-  // grok-edit removed — confirmed invalid (422) via live probe 2026-06-08
-  { id: "qwen",                  name: "Qwen",                          unlimited: true  },
+  { id: "z-image",              name: "Z-Image",                      unlimited: true,  refs: false, maxImages: 8  },
+  { id: "gpt-medium",           name: "GPT",                          unlimited: true,  refs: true,  maxImages: 1  },
+  { id: "gpt-high",             name: "GPT 1 - HQ",                   unlimited: true,  refs: true,  maxImages: 1  },
+  { id: "recraft-v4-1",         name: "Recraft V4.1",                 unlimited: true,  refs: false, maxImages: 4,  note: "Hidden mode — not in Magnific UI but confirmed valid 2026-06-08" },
+  { id: "runway-gen4",          name: "Runway",                       unlimited: true,  refs: true,  maxImages: 2,  note: "Deprecated by Magnific — still accepts requests" },
+  { id: "reve",                 name: "Reve",                         unlimited: true,  refs: true,  maxImages: 8,  note: "Currently inactive in Magnific — may fail" },
+
+  // ── Credit-based (costs credits even on Premium+) ─────────────────────────
+  // (credits: null = credit-based but exact cost not in Magnific API — check Magnific UI)
+
+  // Flux.2 credit model
+  { id: "flux-2-max",           name: "Flux.2 Max",                   unlimited: false, credits: 65,   refs: true,  maxImages: 1,  resolutions: ['1k','2k'] },
+
+  // Seedream credit model
+  { id: "seedream-5-lite",      name: "Seedream 5 Lite",              unlimited: false, credits: null, refs: true,  maxImages: 4,  resolutions: ['2k','3k'] },
+
+  // Qwen — credit-based (no unlimited badge in tti-modes)
+  { id: "qwen",                 name: "Qwen",                         unlimited: false, credits: null, refs: true,  maxImages: 2  },
   // qwen-edit removed — confirmed invalid (422) via live probe 2026-06-08
-  { id: "reve",                  name: "Reve",                          unlimited: true  },
-  { id: "recraft-v4",            name: "Recraft V4",                    unlimited: true  },
-  { id: "recraft-v4-1",          name: "Recraft V4.1",                  unlimited: true,  note: "100 generations/period cap" },
-  { id: "z-image",               name: "Z-Image",                       unlimited: true  },
-  { id: "runway-gen4",           name: "Runway (Deprecated)",           unlimited: true  },
-  // ── Credit-based (costs credits even on Premium+) ────────────────────────
-  // NOTE: Google Nano Banana 2 credit variants (4K, flash-2k, flash-4k) were removed —
-  // their Magnific mode IDs were unverified and Magnific rejects them with "The selected mode is invalid."
-  // Capture correct IDs from browser DevTools (start-tti-v2 request body → mode field) and re-add.
-  // Flux.2 credit models
-  { id: "flux-2-flex",           name: "Flux.2 Flex",                   unlimited: false, credits: 40  },
-  { id: "flux-2-max",            name: "Flux.2 Max",                    unlimited: false, credits: 65  },
-  // Recraft
-  { id: "recraft-v4-pro",        name: "Recraft V4 Pro",                unlimited: false, credits: 175 },
-  // GPT models
-  { id: "gpt-medium",            name: "GPT",                           unlimited: false, credits: 150 },
-  { id: "gpt-high",              name: "GPT 1 - HQ",                    unlimited: false, credits: 500 },
-  { id: "gpt-1-5-medium",        name: "GPT 1.5",                       unlimited: false, credits: 150 },
-  { id: "gpt-1-5-high",          name: "GPT 1.5 - High",                unlimited: false, credits: 500 },
-  { id: "gpt-2",                 name: "GPT 2",                         unlimited: false, credits: 200 },
-  // New models (mode IDs pending DevTools capture)
-  // { id: "???",                name: "Cinematic",                     unlimited: false, credits: 75  },
-  // { id: "???",                name: "Luma Uni-1.1",                  unlimited: false, credits: 140 },
+
+  // Grok — credit-based (no unlimited badge in tti-modes)
+  { id: "grok",                 name: "Grok",                         unlimited: false, credits: null, refs: true,  maxImages: 8  },
+  // grok-edit removed — confirmed invalid (422) via live probe 2026-06-08
+
+  // Recraft credit models
+  { id: "recraft-v4",           name: "Recraft V4",                   unlimited: false, credits: null, refs: false, maxImages: 4  },
+  { id: "recraft-v4-pro",       name: "Recraft V4 Pro",               unlimited: false, credits: 175,  refs: false, maxImages: 4  },
+
+  // GPT credit models (gpt-medium and gpt-high are unlimited — moved above)
+  { id: "gpt-1-5-medium",       name: "GPT 1.5",                      unlimited: false, credits: 150,  refs: true,  maxImages: 1  },
+  { id: "gpt-1-5-high",         name: "GPT 1.5 - High",               unlimited: false, credits: 500,  refs: true,  maxImages: 1  },
+  { id: "gpt-2",                name: "GPT 2",                        unlimited: false, credits: 200,  refs: true,  maxImages: 1,  resolutions: ['1k','2k','4k'] },
+
+  // cinematic — hidden mode, confirmed valid (uses imagen-nano-banana-2 backend), plan type unknown
+  // { id: "cinematic",         name: "Cinematic",                    unlimited: false, credits: null, refs: false, maxImages: 4  },
 ];
 
 // ── Video models ─────────────────────────────────────────────────────────────
