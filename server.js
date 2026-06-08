@@ -2836,6 +2836,25 @@ app.get("/v1/models", (req, res) => {
   });
 });
 
+// ── POST /admin/probe-mode (temp debug) ───────────────────────────────────────
+// Calls start-tti-v2 directly with any mode string and returns Magnific's raw response.
+// Used to discover correct mode IDs. Remove once IDs confirmed.
+app.post('/admin/probe-mode', adminAuthMiddleware, async (req, res) => {
+  const { mode } = req.body || {};
+  if (!mode) return res.status(400).json({ error: 'mode required' });
+  const pool = manager.getPool();
+  if (!pool.length) return res.status(503).json({ error: 'No active accounts' });
+  const acc = pool[0];
+  await refreshSession(acc);
+  const { status, json, text } = await apiRequest(
+    'POST',
+    `/app/api/start-tti-v2?lang=en_US&user_id=${acc.userId}`,
+    { mode, prompt: 'test', references: [], num_images: 1, aspect_ratio: '1:1', variations: false, force_credits: false },
+    acc
+  );
+  res.json({ mode, account: acc.name, status, magnific: json || text.slice(0, 300) });
+});
+
 // ── GET /health ───────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
   const accounts = manager.accounts.map(a => ({
