@@ -95,16 +95,17 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 
 Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). Poll `GET /v1/jobs/:id` for the result. Add `?wait=true` for legacy sync mode.
 
-**Typical job time:** 5–30 seconds.
+**Typical job time:** 5–30 s at 1K · 15–60 s at 2K · 30–120 s at 4K (varies by model).
 
 ### Request
 
 ```json
 {
   "prompt": "a red apple on a wooden table",
-  "model": "flux-2",
+  "model": "imagen-nano-banana-2",
   "num_images": 1,
-  "aspect_ratio": "1:1",
+  "aspect_ratio": "16:9",
+  "resolution": "4k",
   "variations": false,
   "folder": "a17a3809-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 }
@@ -114,8 +115,9 @@ Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). 
 |---|---|---|---|---|
 | `prompt` | string | — | ✅ | Text description of the image |
 | `model` | string | `"auto"` | | Model ID — see [Image Models](#image-models) |
-| `num_images` | number | `1` | | Number of images to generate (1–4) |
-| `aspect_ratio` | string | `"1:1"` | | `"1:1"` `"16:9"` `"9:16"` `"4:3"` `"3:4"` `"3:2"` `"2:3"` |
+| `num_images` | number | `1` | | Number of images to generate (1–4, model max applies) |
+| `aspect_ratio` | string | `"1:1"` | | `"1:1"` `"16:9"` `"9:16"` `"4:3"` `"3:4"` `"3:2"` `"2:3"` `"5:4"` `"4:5"` `"21:9"` |
+| `resolution` | string | `"1k"` | | Output quality tier: `"1k"` `"2k"` `"4k"`. Only valid for models that list `resolutions` in `GET /v1/models`. Returns HTTP 400 if the model does not support the requested tier. Aliases accepted: `"4K"` `"2160p"` `"uhd"` → `"4k"` · `"1440p"` → `"2k"` · `"1080p"` `"hd"` → `"1k"` |
 | `variations` | boolean | `false` | | Generate creative prompt variations |
 | `folder` | string | account default | | Space UUID — saves images into that folder |
 
@@ -141,38 +143,73 @@ Poll `GET /v1/jobs/:id` every `retry_after` seconds. When `status` is `completed
         "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.png?exp=...&hmac=...",
         "preview_url": "...",
         "revised_prompt": "a crisp red apple resting on a rustic wooden table...",
-        "width": 1024, "height": 1024, "mode": "flux-2", "seed": "275022",
-        "id": "KjXMRaNkqp", "family": "a1f15323-..."
+        "width": 5376,
+        "height": 3072,
+        "resolution": "4k",
+        "mode": "imagen-nano-banana-2",
+        "seed": "275022",
+        "id": "KjXMRaNkqp",
+        "family": "a1f15323-..."
       }
     ]
   },
   "account": "info@eleventhspace.com",
-  "processing_time_ms": 11841
+  "processing_time_ms": 89000
 }
 ```
+
+**Response image fields:**
+
+| Field | Description |
+|---|---|
+| `url` | Full-resolution CDN URL (expires ~24h — download promptly) |
+| `preview_url` | Lower-resolution preview (same image, compressed) |
+| `revised_prompt` | Actual prompt used after Magnific's smart enhancement |
+| `width` / `height` | Expected output pixel dimensions (computed from `aspect_ratio` + `resolution`) |
+| `resolution` | Normalized resolution tier used: `"1k"` `"2k"` or `"4k"` |
+| `mode` | Magnific mode ID that was used |
+| `seed` | Generation seed (for reproducibility where supported) |
+| `id` | Magnific creation identifier |
+| `family` | Generation batch UUID (groups all images from one request) |
 
 ### Response (sync — `?wait=true`)
 
 ```json
 {
-  "created": 1716278400,
-  "processing_time_ms": 11841,
-  "data": [{ "url": "https://pikaso.cdnpk.net/...", "revised_prompt": "...", "width": 1024, "height": 1024, "mode": "flux-2" }],
+  "created": 1749462400,
+  "processing_time_ms": 89000,
+  "data": [
+    {
+      "url": "https://pikaso.cdnpk.net/...",
+      "revised_prompt": "...",
+      "width": 5376,
+      "height": 3072,
+      "resolution": "4k",
+      "mode": "imagen-nano-banana-2"
+    }
+  ],
   "account": "info@eleventhspace.com"
 }
 ```
 
-### Aspect Ratio → Output Dimensions
+### Aspect Ratio → Base Dimensions (1K)
 
-| `aspect_ratio` | Width | Height |
-|---|---|---|
-| `1:1` | 1024 | 1024 |
-| `16:9` | 1024 | 576 |
-| `9:16` | 576 | 1024 |
-| `4:3` | 1024 | 768 |
-| `3:4` | 768 | 1024 |
-| `3:2` | 1024 | 683 |
-| `2:3` | 683 | 1024 |
+These are Magnific's native 1K pixel dimensions per aspect ratio. At 2K dimensions double; at 4K dimensions quadruple.
+
+| `aspect_ratio` | 1K (default) | 2K | 4K |
+|---|---|---|---|
+| `1:1` | 1024 × 1024 | 2048 × 2048 | 4096 × 4096 |
+| `16:9` | 1344 × 768 | 2688 × 1536 | 5376 × 3072 |
+| `9:16` | 768 × 1344 | 1536 × 2688 | 3072 × 5376 |
+| `4:3` | 1024 × 768 | 2048 × 1536 | 4096 × 3072 |
+| `3:4` | 768 × 1024 | 1536 × 2048 | 3072 × 4096 |
+| `3:2` | 1216 × 832 | 2432 × 1664 | 4864 × 3328 |
+| `2:3` | 832 × 1216 | 1664 × 2432 | 3328 × 4864 |
+| `5:4` | 1280 × 1024 | 2560 × 2048 | 5120 × 4096 |
+| `4:5` | 832 × 1024 | 1664 × 2048 | 3328 × 4096 |
+| `21:9` | 1536 × 656 | 3072 × 1312 | 6144 × 2624 |
+
+> **Note:** Not all models support all aspect ratios. Models that support `resolution` are marked with a `resolutions` array in `GET /v1/models?type=image`. Requesting `"4k"` on a model without resolution support returns HTTP 400.
 
 ---
 
@@ -1379,7 +1416,7 @@ curl -X POST $BASE/v1/images/describe \
 
 ### Image tips
 - **Start with unlimited image models** — `flux-2`, `mystic-2-5`, `imagen-nano-banana-2-flash`, `auto` cost no credits and work out of the box
-- **4K image generation** — use `imagen-nano-banana-2-flash` or `imagen-nano-banana-2` with `"resolution": "4k"`, or `gpt-2` (credit-based) — same model ID, different resolution param
+- **4K image generation** — add `"resolution": "4k"` to any model whose `resolutions` array includes `"4k"`: `imagen-nano-banana-2`, `imagen-nano-banana-2-flash`, `gpt-2`. Aliases `"4K"` / `"2160p"` / `"uhd"` are accepted and normalized. Returns HTTP 400 if the model doesn't support that tier
 - **Reference images (`refs: true`)** — pass `references: [{"type": "image", "url": "..."}]`. Supported by 28 of 43 image models. Check the table in [Image Models](#image-models)
 - **`gpt-medium` and `gpt-high`** are unlimited (no credits) — don't confuse with `gpt-1-5-medium`/`gpt-1-5-high` which cost credits
 - **`flux-2-flex`** is unlimited (not credit-based) and supports 1K/2K output
