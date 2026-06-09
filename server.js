@@ -695,17 +695,36 @@ async function apiRequest(method, apiPath, body, acc) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function aspectToDimensions(ratio) {
-  const map = {
-    "1:1":  { width: 1024, height: 1024 },
-    "16:9": { width: 1024, height: 576  },
-    "9:16": { width: 576,  height: 1024 },
-    "4:3":  { width: 1024, height: 768  },
-    "3:4":  { width: 768,  height: 1024 },
-    "3:2":  { width: 1024, height: 683  },
-    "2:3":  { width: 683,  height: 1024 },
-  };
-  return map[ratio] || { width: 1024, height: 1024 };
+// Base 1k dimensions per aspect ratio — from Magnific's /app/api/tti-modes aspectRatios[].size
+const ASPECT_BASE_DIMS = {
+  "1:1":  { width: 1024, height: 1024 },
+  "16:9": { width: 1344, height: 768  },
+  "9:16": { width: 768,  height: 1344 },
+  "4:3":  { width: 1024, height: 768  },
+  "3:4":  { width: 768,  height: 1024 },
+  "3:2":  { width: 1216, height: 832  },
+  "2:3":  { width: 832,  height: 1216 },
+  "5:4":  { width: 1280, height: 1024 },
+  "4:5":  { width: 832,  height: 1024 },
+  "21:9": { width: 1536, height: 656  },
+};
+
+const RESOLUTION_SCALE = { "1k": 1, "2k": 2, "4k": 4 };
+
+function aspectToDimensions(ratio, resolution = null) {
+  const base = ASPECT_BASE_DIMS[ratio] || { width: 1024, height: 1024 };
+  const scale = (resolution && RESOLUTION_SCALE[resolution]) || 1;
+  return { width: base.width * scale, height: base.height * scale };
+}
+
+// Normalize caller-supplied resolution strings → Magnific's "1k"/"2k"/"4k" (or null)
+function normalizeResolution(raw) {
+  if (!raw) return null;
+  const s = String(raw).toLowerCase().trim();
+  if (s === '4k' || s === '2160p' || s === 'ultra' || s === 'uhd') return '4k';
+  if (s === '2k' || s === '1440p' || s === '2560p') return '2k';
+  if (s === '1k' || s === '1080p' || s === 'hd') return '1k';
+  return null; // unrecognized — let Magnific use its default
 }
 
 // ── Session refresh ───────────────────────────────────────────────────────────
@@ -911,7 +930,7 @@ async function deleteCreations(acc, integerIds) {
 }
 
 // ── Image generation ──────────────────────────────────────────────────────────
-async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null }) {
+async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null, resolution = null }) {
   // model param takes precedence over mode param
   const resolvedMode = model !== "auto" ? model : mode;
   // folder param overrides the account's default folderRef
@@ -921,20 +940,23 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   await refreshSession(acc);
 
   // Step 1: Reserve generation slots
+  const startBody = {
+    mode: resolvedMode,
+    prompt,
+    references: [],
+    num_images,
+    aspect_ratio,
+    color_palette: null,
+    color_palette_id: null,
+    variations,
+    force_credits: false,
+  };
+  if (resolution) startBody.resolution = resolution;
+
   const { status, json, text } = await apiRequest(
     "POST",
     `/app/api/start-tti-v2?lang=en_US&user_id=${acc.userId}`,
-    {
-      mode: resolvedMode,
-      prompt,
-      references: [],
-      num_images,
-      aspect_ratio,
-      color_palette: null,
-      color_palette_id: null,
-      variations,
-      force_credits: false,
-    },
+    startBody,
     acc
   );
 
@@ -969,11 +991,11 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
 
   const family = json.family;
   const requestTokens = json.request_tokens || [];
-  const dims = aspectToDimensions(aspect_ratio);
+  const dims = aspectToDimensions(aspect_ratio, resolution);
   const seed = Math.floor(Math.random() * 1000000);
   const startTime = Date.now();
 
-  addLog("INFO", `[${acc.name}] Slots reserved — family=${family} tokens=${requestTokens.length} prompt="${prompt.slice(0, 60)}"`);
+  addLog("INFO", `[${acc.name}] Slots reserved — family=${family} tokens=${requestTokens.length} resolution=${resolution||'default'} prompt="${prompt.slice(0, 60)}"`);
 
   // Step 2: Queue each image via render/v4 on ak-data.magnific.com
   let queued = 0;
@@ -985,7 +1007,7 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
     }
 
     try {
-      const rv = await renderV4(acc, {
+      const renderBody = {
         tool: "text-to-image",
         mode: resolvedMode,
         family,
@@ -1007,7 +1029,10 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
         smart_prompt: true,
         image_index: i,
         num_images,
-      });
+      };
+      if (resolution) renderBody.resolution = resolution;
+
+      const rv = await renderV4(acc, renderBody);
 
       if (rv.status === 200 || rv.status === 201) {
         queued++;
@@ -1062,9 +1087,12 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
         url: item.url,
         preview: item.large_preview || item.preview || item.url,
         prompt: item.metadata?.prompt || item.metadata?.inputPrompt || prompt,
-        width: item.metadata?.width || dims.width,
-        height: item.metadata?.height || dims.height,
-        mode: item.metadata?.mode || mode,
+        // Magnific stores our request width/height in metadata (always 1k), not the rendered output.
+        // Compute expected dimensions from aspect_ratio + resolution instead.
+        width: dims.width,
+        height: dims.height,
+        resolution: resolution || '1k',
+        mode: item.metadata?.mode || resolvedMode,
         seed: item.metadata?.seed || seed,
         id: item.identifier || String(item.id),
         family,
@@ -2397,7 +2425,7 @@ app.get('/v1/jobs', auth, (req, res) => {
 
 // ── POST /v1/images/generate ──────────────────────────────────────────────────
 app.post("/v1/images/generate", auth, async (req, res) => {
-  const { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model, variations = false, folder } = req.body || {};
+  const { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model, variations = false, folder, resolution: rawResolution } = req.body || {};
   const syncMode = req.query.wait === 'true';
 
   if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
@@ -2408,6 +2436,12 @@ app.post("/v1/images/generate", auth, async (req, res) => {
     return res.status(400).json({ error: `Unknown model "${resolvedModel}". Call GET /v1/models to see available models.` });
   }
 
+  // Normalize resolution — only pass if model supports it
+  const resolution = normalizeResolution(rawResolution);
+  if (resolution && modelInfo && !modelInfo.resolutions?.includes(resolution)) {
+    return res.status(400).json({ error: `Model "${resolvedModel}" does not support resolution "${resolution}". Supported: ${modelInfo.resolutions?.join(', ') || 'none'}` });
+  }
+
   const genParams = {
     prompt,
     num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
@@ -2415,6 +2449,7 @@ app.post("/v1/images/generate", auth, async (req, res) => {
     model: resolvedModel,
     variations: Boolean(variations),
     folder: folder || null,
+    resolution: resolution || null,
   };
 
   if (syncMode) {
@@ -2425,7 +2460,7 @@ app.post("/v1/images/generate", auth, async (req, res) => {
       return res.json({
         created: Math.floor(Date.now() / 1000),
         processing_time_ms: Date.now() - _t0,
-        data: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, mode: img.mode, seed: img.seed, id: img.id, family: img.family })),
+        data: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, resolution: img.resolution, mode: img.mode, seed: img.seed, id: img.id, family: img.family })),
         account,
       });
     } catch (e) {
@@ -2442,7 +2477,7 @@ app.post("/v1/images/generate", auth, async (req, res) => {
   job.status = 'processing'; job.updated_at = Date.now();
   generateWithRotation(genParams)
     .then(({ images, account }) => finishJob(job, {
-      images: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, mode: img.mode, seed: img.seed, id: img.id, family: img.family }))
+      images: images.map(img => ({ url: img.url, preview_url: img.preview, revised_prompt: img.prompt, width: img.width, height: img.height, resolution: img.resolution, mode: img.mode, seed: img.seed, id: img.id, family: img.family }))
     }, account, t0))
     .catch(e => { addLog('ERROR', `[job ${job.id}] Image failed: ${e.message}`); failJob(job, e, t0); });
 });
