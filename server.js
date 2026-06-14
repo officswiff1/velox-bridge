@@ -136,8 +136,8 @@ const IMAGE_MODELS = [
   // Google — all 3 Nano Banana variants confirmed active via /app/api/tti-modes 2026-06-08
   // Resolution tiers (1k/2k/4k) are passed as a parameter — not separate mode IDs
   { id: "imagen-nano-banana",         name: "Google Nano Banana",           unlimited: true,  refs: true,  maxImages: 4  },
-  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k','4k'], note: "Gemini 3.1 Flash" },
-  { id: "imagen-nano-banana-2",       name: "Google Nano Banana Pro",       unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k','4k'], note: "Gemini 3.0 Pro" },
+  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.1 Flash" },
+  { id: "imagen-nano-banana-2",       name: "Google Nano Banana Pro",       unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.0 Pro" },
   { id: "imagen3",              name: "Google Imagen 3",              unlimited: true,  refs: false, maxImages: 12 },
   { id: "imagen4-fast",         name: "Google Imagen 4 Fast",         unlimited: true,  refs: false, maxImages: 8  },
   { id: "imagen4",              name: "Google Imagen 4",              unlimited: true,  refs: false, maxImages: 1  },
