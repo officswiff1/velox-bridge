@@ -105,7 +105,7 @@ Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). 
   "model": "imagen-nano-banana-2",
   "num_images": 1,
   "aspect_ratio": "16:9",
-  "resolution": "4k",
+  "resolution": "2k",
   "variations": false,
   "folder": "a17a3809-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 }
@@ -143,9 +143,9 @@ Poll `GET /v1/jobs/:id` every `retry_after` seconds. When `status` is `completed
         "url": "https://pikaso.cdnpk.net/private/production/xxx/yyy.png?exp=...&hmac=...",
         "preview_url": "...",
         "revised_prompt": "a crisp red apple resting on a rustic wooden table...",
-        "width": 5376,
-        "height": 3072,
-        "resolution": "4k",
+        "width": 2688,
+        "height": 1536,
+        "resolution": "2k",
         "mode": "imagen-nano-banana-2",
         "seed": "275022",
         "id": "KjXMRaNkqp",
@@ -182,9 +182,9 @@ Poll `GET /v1/jobs/:id` every `retry_after` seconds. When `status` is `completed
     {
       "url": "https://pikaso.cdnpk.net/...",
       "revised_prompt": "...",
-      "width": 5376,
-      "height": 3072,
-      "resolution": "4k",
+      "width": 2688,
+      "height": 1536,
+      "resolution": "2k",
       "mode": "imagen-nano-banana-2"
     }
   ],
@@ -687,7 +687,7 @@ Each image model includes reference-image support, max images per generation, an
     "credits": 0,
     "refs": true,
     "maxImages": 4,
-    "resolutions": ["1k", "2k", "4k"],
+    "resolutions": ["1k", "2k"],
     "note": "Gemini 3.1 Flash"
   },
   {
@@ -927,8 +927,8 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 | `seedream` | Seedream | ✅ | 4 | default |
 | **Google** | | | | |
 | `imagen-nano-banana` | Google Nano Banana | ✅ | 4 | default |
-| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | ✅ | 4 | 1K, 2K, **4K** |
-| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | ✅ | 4 | 1K, 2K, **4K** |
+| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | ✅ | 4 | 1K, 2K |
+| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | ✅ | 4 | 1K, 2K |
 | `imagen3` | Google Imagen 3 | — | 12 | default |
 | `imagen4-fast` | Google Imagen 4 Fast | — | 8 | default |
 | `imagen4` | Google Imagen 4 | — | 1 | default |
@@ -1416,7 +1416,7 @@ curl -X POST $BASE/v1/images/describe \
 
 ### Image tips
 - **Start with unlimited image models** — `flux-2`, `mystic-2-5`, `imagen-nano-banana-2-flash`, `auto` cost no credits and work out of the box
-- **4K image generation** — add `"resolution": "4k"` to any model whose `resolutions` array includes `"4k"`: `imagen-nano-banana-2`, `imagen-nano-banana-2-flash`, `gpt-2`. Aliases `"4K"` / `"2160p"` / `"uhd"` are accepted and normalized. Returns HTTP 400 if the model doesn't support that tier
+- **4K image generation** — add `"resolution": "4k"` to any model whose `resolutions` array includes `"4k"`: `gpt-2`. Aliases `"4K"` / `"2160p"` / `"uhd"` are accepted and normalized. Returns HTTP 400 if the model doesn't support that tier. Note: `imagen-nano-banana-2` and `imagen-nano-banana-2-flash` are unlimited at 1K/2K only — 4K requires credits they may not have (returns 500)
 - **Reference images (`refs: true`)** — pass `references: [{"type": "image", "url": "..."}]`. Supported by 28 of 43 image models. Check the table in [Image Models](#image-models)
 - **`gpt-medium` and `gpt-high`** are unlimited (no credits) — don't confuse with `gpt-1-5-medium`/`gpt-1-5-high` which cost credits
 - **`flux-2-flex`** is unlimited (not credit-based) and supports 1K/2K output
