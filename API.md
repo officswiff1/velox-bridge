@@ -302,12 +302,14 @@ Option B — base64 data URL:
 
 ```json
 {
-  "result_b64": "data:image/png;base64,iVBORw0KGgo...",
+  "url": "https://pikaso.cdnpk.net/temporal/bg-removed-xxxx.png",
   "account": "whora14@gmail.com"
 }
 ```
 
-`result_b64` is always a transparent PNG (RGBA) encoded as a base64 data URL. Paste it directly into an `<img src>` or decode and save as `.png`.
+`url` is a pikaso CDN link to a transparent PNG (RGBA). The user's browser can fetch it directly from the CDN — it never retransits your server. Use it in an `<img src>` or download as `.png`.
+
+> **Migration note:** `result_b64` was removed in favour of `url`. If you were reading `result_b64`, switch to `url`.
 
 ---
 
