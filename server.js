@@ -1880,7 +1880,7 @@ async function uploadWithRotation(imageData) {
 
 // ── Background removal ────────────────────────────────────────────────────────
 // Calls POST /app/api/remove-background — returns PNG binary directly (no polling).
-// Returns a base64 data URL of the result PNG with transparent background.
+// Uploads result to pikaso CDN via temporal-upload-url and returns the CDN URL.
 async function removeBackground(acc, imageSource) {
   let dataUrl;
   if (imageSource.startsWith('data:')) {
@@ -1940,8 +1940,9 @@ async function removeBackground(acc, imageSource) {
     throw Object.assign(new Error('Background removal returned unexpected data (not a PNG)'), { status: 500 });
   }
 
-  addLog('INFO', `[${acc.name}] BG remove done — ${buf.length} bytes PNG`);
-  return `data:image/png;base64,${buf.toString('base64')}`;
+  addLog('INFO', `[${acc.name}] BG remove done — ${buf.length} bytes PNG, uploading to CDN`);
+  const cdnUrl = await uploadOneFrame(acc, `data:image/png;base64,${buf.toString('base64')}`);
+  return cdnUrl;
 }
 
 async function removeBackgroundWithRotation(imageSource) {
@@ -2722,7 +2723,7 @@ app.post('/v1/images/describe', auth, async (req, res) => {
 
 // ── POST /v1/images/remove-background ────────────────────────────────────────
 // Remove the background from an image. Accepts image_url or image_data (base64).
-// Returns: { result_b64: "data:image/png;base64,...", account }
+// Returns: { url: "https://pikaso.cdnpk.net/...", account }
 app.post('/v1/images/remove-background', auth, async (req, res) => {
   const { image_url, image_data } = req.body || {};
   const imageSource = image_data || image_url;
@@ -2733,8 +2734,8 @@ app.post('/v1/images/remove-background', auth, async (req, res) => {
     return res.status(400).json({ error: 'image_data must be a base64 data URL (data:image/...;base64,...)' });
   }
   try {
-    const { result: result_b64, account } = await removeBackgroundWithRotation(imageSource);
-    res.json({ result_b64, account });
+    const { result: url, account } = await removeBackgroundWithRotation(imageSource);
+    res.json({ url, account });
   } catch (e) {
     addLog('ERROR', `BG remove failed: ${e.message}`);
     res.status(e.status || 500).json({ error: e.message });
@@ -4004,10 +4005,10 @@ Bulk (array of objects):
         const d = await fetch('/v1/images/remove-background', {
           method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body),
         }).then(r => r.json());
-        if (d.result_b64) {
+        if (d.url) {
           el.innerHTML = \`<div style="color:#4ade80;margin-bottom:6px">✅ Done · account: \${d.account}</div>
-            <img src="\${d.result_b64}" style="max-width:100%;border-radius:8px;border:1px solid #222;background:repeating-conic-gradient(#555 0% 25%,#333 0% 50%) 0 0/20px 20px">
-            <a href="\${d.result_b64}" download="bg-removed.png" class="dl" style="display:block;margin-top:6px">⬇ Download PNG</a>\`;
+            <img src="\${d.url}" style="max-width:100%;border-radius:8px;border:1px solid #222;background:repeating-conic-gradient(#555 0% 25%,#333 0% 50%) 0 0/20px 20px">
+            <a href="\${d.url}" download="bg-removed.png" class="dl" style="display:block;margin-top:6px">⬇ Download PNG</a>\`;
         } else {
           el.innerHTML = \`<span style='color:#f87171'>Error: \${d.error || JSON.stringify(d)}</span>\`;
         }
