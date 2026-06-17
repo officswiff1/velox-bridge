@@ -183,6 +183,33 @@ const IMAGE_MODELS = [
   // { id: "cinematic",         name: "Cinematic",                    unlimited: false, credits: null, refs: false, maxImages: 4  },
 ];
 
+// ── Reference-image limits ──────────────────────────────────────────────────
+// Authoritative max reference-image count per model, pulled LIVE from Magnific's
+// /app/api/tti-modes → settings.maxReferences (verified 2026-06-17). This is the
+// source of truth for which models accept reference images (references[]) and how
+// many. Models absent here expose no "image-references" feature in tti-modes.
+// We reconcile each model's refs/refsLimit from this map so the two never drift.
+const IMAGE_REF_LIMITS = {
+  "auto": 8,
+  "flux-kontext": 4, "flux-kontext-high": 4,
+  "flux-2": 4, "flux-2-klein": 4, "flux-2-flex": 4, "flux-2-max": 8,
+  "seedream": 8, "seedream-4": 8, "seedream-4-4k": 8, "seedream-4-5": 8, "seedream-5-lite": 14,
+  "imagen-nano-banana": 8, "imagen-nano-banana-2": 14, "imagen-nano-banana-2-flash": 14,
+  "gpt-medium": 16, "gpt-high": 16, "gpt-1-5-medium": 8, "gpt-1-5-high": 8, "gpt-2": 16,
+  "qwen": 3, "grok": 1, "runway-gen4": 3, "reve": 8,
+};
+for (const m of IMAGE_MODELS) {
+  const lim = IMAGE_REF_LIMITS[m.id];
+  if (lim != null) { m.refs = true; m.refsLimit = lim; }
+  else { m.refs = false; m.refsLimit = 0; } // tti-modes reports no reference support
+}
+
+// Reference roles Magnific accepts in references[]/image_references[]. Each ref
+// MUST declare its role — confirmed live: "style" is accepted, generic "image" is
+// rejected ("references.0.type is invalid"). "style" and "character" are the UI's
+// primary roles; the rest are accepted by the models that advertise them.
+const IMAGE_REF_TYPES = ["style", "character", "product", "structure", "locations", "sketch", "image"];
+
 // ── Video models ─────────────────────────────────────────────────────────────
 // id          = slug for POST /v1/videos/generate
 // api/videoModel/videoMode = exact fields from GET /app/api/video/ai-models
@@ -660,6 +687,40 @@ class AccountManager {
     acc.sessionDead = true; // 401 from generation = cookies are dead
     addLog("WARN", `[${acc.name}] Marked as expired — remaining capacity: ${this.totalCapacity} slots`);
   }
+
+  // CAPTCHA / anti-bot challenge: cookies are still valid, but Magnific is gating
+  // this account's generations until a human solves the challenge in a browser.
+  // We mark it for a cooldown so credit-model routing skips it, then auto-retries
+  // once the window passes (a real generation will clear it on success).
+  markChallenged(acc, reason) {
+    acc.challengedUntil = Date.now() + CAPTCHA_COOLDOWN_MS;
+    acc.challengeReason = reason || "CAPTCHA / anti-bot challenge";
+    addLog("WARN", `[${acc.name}] Challenged (${acc.challengeReason}) — skipping for credit models until ${new Date(acc.challengedUntil).toISOString()}`);
+  }
+
+  clearChallenge(acc) {
+    if (acc.challengedUntil) {
+      acc.challengedUntil = 0;
+      acc.challengeReason = null;
+      addLog("INFO", `[${acc.name}] Challenge cleared — generations succeeding again`);
+    }
+  }
+}
+
+// How long to skip a CAPTCHA-challenged account before retrying it (clears early on a success).
+const CAPTCHA_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+
+// Detect a CAPTCHA / anti-bot challenge from a Magnific response.
+// Returns a human-readable reason string, or null if it's not a challenge.
+function detectChallenge(status, json, text) {
+  if (status === 423 || status === 456) {
+    return json?.message || (status === 423 ? "Captcha verification required" : 'Anti-bot block ("device disabled")');
+  }
+  const blob = `${json?.message || ""} ${json?.error || ""} ${text || ""}`.toLowerCase();
+  if (/captcha|verification required|are you human|challenge required|could not be queued|device is disabled/.test(blob)) {
+    return json?.message || json?.error || "CAPTCHA / anti-bot challenge";
+  }
+  return null;
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
@@ -929,8 +990,42 @@ async function deleteCreations(acc, integerIds) {
   }
 }
 
+// Upload a reference image to Magnific's temporal storage and return the reference
+// token Magnific expects: "temporal:{filename}". (Verified live: start-tti-v2/render
+// reject raw base64 — they want "creation:id", "temporal:filename", or
+// "character-generator-reference:id".) Accepts a base64 data URL or a public/remote URL.
+async function uploadReferenceTemporal(acc, src) {
+  let buf, mime;
+  if (src.startsWith("data:")) {
+    const m = src.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) throw Object.assign(new Error("Invalid data URL for reference image"), { status: 400 });
+    mime = m[1]; buf = Buffer.from(m[2], "base64");
+  } else {
+    const r = await fetch(src, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw Object.assign(new Error(`Failed to fetch reference image (HTTP ${r.status}) from ${src.slice(0, 120)}`), { status: 400 });
+    buf = Buffer.from(await r.arrayBuffer());
+    mime = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+  }
+
+  const hdrs = {
+    accept: "application/json", "content-type": "application/json",
+    cookie: acc.cookieString, origin: BASE, referer: `${BASE}/app/ai-image-generator`,
+    "x-xsrf-token": acc.xsrf,
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+  };
+  const r1 = await fetch(`${BASE}/app/api/temporal-upload-url?lang=en_US&user_id=${acc.userId}`,
+    { method: "POST", headers: hdrs, body: JSON.stringify({ mime_type: mime }), signal: AbortSignal.timeout(15000) });
+  const j1 = await r1.json().catch(() => ({}));
+  if (!r1.ok || !j1.upload_url || !j1.path) throw Object.assign(new Error(`temporal-upload-url failed (${r1.status})`), { status: 502 });
+
+  const put = await fetch(j1.upload_url, { method: "PUT", headers: { "content-type": mime }, body: buf, signal: AbortSignal.timeout(60000) });
+  if (!put.ok) throw Object.assign(new Error(`Reference image upload failed (GCS ${put.status})`), { status: 502 });
+
+  return "temporal:" + j1.path.split("/").pop();
+}
+
 // ── Image generation ──────────────────────────────────────────────────────────
-async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null, resolution = null }) {
+async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null, resolution = null, references = [] }) {
   // model param takes precedence over mode param
   const resolvedMode = model !== "auto" ? model : mode;
   // folder param overrides the account's default folderRef
@@ -939,11 +1034,37 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   // magnific_session is the primary auth; GR_TOKEN expiry is advisory only — let the API itself reject if truly dead.
   await refreshSession(acc);
 
+  // Reference images. Wire shape reverse-engineered + verified live against Magnific:
+  // each ref is { image, type, category, label } where `image` is a reference TOKEN
+  // ("temporal:{filename}" after uploading to temporal storage, or "creation:{id}"),
+  // NOT raw base64 (the API rejects that). The SAME array goes into start-tti-v2
+  // "references" and render/v4 "image_references". Role→type/category mirrors the UI:
+  // a plain image/sketch → type:"reference"; style/character/product/structure/locations keep their role.
+  // Verified: a "character" ref reproduces the reference subject in the output.
+  let imageReferences = [];
+  if (references.length > 0) {
+    for (const ref of references) {
+      const role = ref.type || "style";
+      let image;
+      if (ref.creation_id || ref.identifier) {
+        image = `creation:${ref.creation_id || ref.identifier}`;
+      } else if (typeof ref.url === "string" && ref.url.trim()) {
+        image = await uploadReferenceTemporal(acc, ref.url.trim()); // → "temporal:{filename}"
+      } else {
+        continue;
+      }
+      const type = (role === "image" || role === "sketch") ? "reference" : role;
+      const category = (role === "sketch") ? "image" : role;
+      imageReferences.push({ image, type, category, label: ref.label || role });
+    }
+    addLog("INFO", `[${acc.name}] Attaching ${imageReferences.length} reference image(s) for mode=${resolvedMode} (roles: ${imageReferences.map(r => r.category).join(",")})`);
+  }
+
   // Step 1: Reserve generation slots
   const startBody = {
     mode: resolvedMode,
     prompt,
-    references: [],
+    references: imageReferences,
     num_images,
     aspect_ratio,
     color_palette: null,
@@ -967,19 +1088,38 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   }
 
   if (status !== 200 || !json?.family) {
-    // Parse Magnific's error into a clean human-readable message
+    // Parse Magnific's error into a clean human-readable message + an accurate status.
     let reason = text.slice(0, 200);
+    let outStatus = status;
+    const isValidationError = !!json?.errors || (json?.message && /invalid|required|must be/i.test(json.message));
+    const challenge = detectChallenge(status, json, text);
+    if (challenge) {
+      // CAPTCHA / anti-bot: recoverable — flag so tryWithRotation skips this account, not expire it.
+      const err = new Error(`Magnific requires CAPTCHA/anti-bot verification on this account: ${challenge}. Solve it in a browser, then re-export cookies.`);
+      err.status = 423;
+      err.challenge = challenge;
+      throw err;
+    }
     if (json?.message === 'The selected mode is invalid.') {
       reason = `Model "${resolvedMode}" is not recognized by Magnific — this model ID may be incorrect or no longer available. Use GET /v1/models to list valid model IDs.`;
-    } else if (json?.message) {
-      reason = json.message;
-    } else if (json?.error === 'insufficient_credits' || status === 422) {
+      outStatus = 400;
+    } else if (isValidationError) {
+      // e.g. "The selected references.0.type is invalid." — a bad request, not a credits problem.
+      reason = json.message || `Invalid request for model "${resolvedMode}": ${JSON.stringify(json.errors).slice(0, 200)}`;
+      outStatus = 400;
+    } else if (json?.error === 'insufficient_credits') {
       reason = `Not enough credits for model "${resolvedMode}" — check your account balance`;
+      outStatus = 402;
+    } else if (status === 422) {
+      reason = json?.message || `Not enough credits for model "${resolvedMode}" — check your account balance`;
+      outStatus = 402;
     } else if (status === 429) {
       reason = 'Rate limited by Magnific — try again in a moment';
+    } else if (json?.message) {
+      reason = json.message;
     }
     const err = new Error(reason);
-    err.status = status === 422 ? 402 : status;
+    err.status = outStatus;
     throw err;
   }
 
@@ -999,6 +1139,7 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
 
   // Step 2: Queue each image via render/v4 on ak-data.magnific.com
   let queued = 0;
+  let renderChallenge = null; // set if render/v4 returns a CAPTCHA/anti-bot challenge
   for (let i = 0; i < num_images; i++) {
     const request_token = requestTokens[i];
     if (!request_token) {
@@ -1019,6 +1160,7 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
         aspect_ratio,
         request_token,
         force_credits: false,
+        ...(imageReferences.length > 0 ? { image_references: imageReferences } : {}),
         metadata: {
           inputPrompt: prompt,
           aspectRatio: aspect_ratio,
@@ -1038,6 +1180,8 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
         queued++;
         addLog("INFO", `[${acc.name}] Queued image ${i} — id=${rv.json?.creation?.id || "?"} status=${rv.json?.creation?.status || "?"}`);
       } else {
+        const ch = detectChallenge(rv.status, rv.json, rv.text);
+        if (ch) renderChallenge = ch;
         addLog("WARN", `[${acc.name}] render/v4 image ${i} → ${rv.status}: ${rv.text.slice(0, 200)}`);
       }
     } catch (e) {
@@ -1046,6 +1190,12 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   }
 
   if (queued === 0) {
+    if (renderChallenge) {
+      const err = new Error(`Magnific requires CAPTCHA/anti-bot verification on this account: ${renderChallenge}. Solve it in a browser, then re-export cookies.`);
+      err.status = 423;
+      err.challenge = renderChallenge;
+      throw err;
+    }
     throw new Error("All render/v4 calls failed — images could not be queued. Check logs for details.");
   }
 
@@ -1987,6 +2137,7 @@ async function tryWithRotation(pool, tag, fn) {
         const result = await fn(freeAcc);
         release();
         // Track last successful generation for admin UI
+        manager.clearChallenge(freeAcc); // success → not challenged anymore
         freeAcc.lastUsedAt = Date.now();
         freeAcc.lastUsedTag = tag; // 'image' | 'video' | 'audio' | etc.
         return result;
@@ -1995,6 +2146,11 @@ async function tryWithRotation(pool, tag, fn) {
         lastError = e;
 
         if (e.status === 400) throw e; // invalid params — no point retrying
+
+        if (e.challenge || e.status === 423 || e.status === 456) {
+          manager.markChallenged(freeAcc, e.challenge || e.message);
+          continue; // recoverable — rotate to another account
+        }
 
         if (e.status === 401 || e.status === 403 || e.status === 419) {
           manager.markExpired(freeAcc);
@@ -2036,6 +2192,7 @@ async function tryWithRotation(pool, tag, fn) {
     try {
       const result = await fn(waitAcc);
       release2();
+      manager.clearChallenge(waitAcc); // success → not challenged anymore
       waitAcc.lastUsedAt = Date.now();
       waitAcc.lastUsedTag = tag;
       return result;
@@ -2044,6 +2201,11 @@ async function tryWithRotation(pool, tag, fn) {
       lastError = e;
 
       if (e.status === 400) throw e;
+
+      if (e.challenge || e.status === 423 || e.status === 456) {
+        manager.markChallenged(waitAcc, e.challenge || e.message);
+        continue; // recoverable — rotate to another account
+      }
 
       if (e.status === 401 || e.status === 403 || e.status === 419) {
         manager.markExpired(waitAcc);
@@ -2079,6 +2241,14 @@ async function generateVideoWithRotation(params) {
   const vm = VIDEO_MODELS.find(m => m.id === params.model);
   const creditCost = vm?.credits || 0;
   if (!vm?.unlimited && creditCost > 0) {
+    // Skip CAPTCHA-challenged accounts for credit models (so one challenged account
+    // doesn't take credit models down). Fall back to the full pool if all are challenged.
+    const now = Date.now();
+    const unchallenged = pool.filter(a => !(a.challengedUntil > now));
+    if (unchallenged.length > 0 && unchallenged.length < pool.length) {
+      addLog('INFO', `Video credit model "${params.model}" — skipping ${pool.length - unchallenged.length} challenged account(s)`);
+      pool = unchallenged;
+    }
     const checkedAccounts = pool.filter(a => a.planCheckedAt != null && a.credits != null);
     const creditPool = pool.filter(a =>
       a.planCheckedAt == null ||                          // not yet checked — include optimistically
@@ -2338,6 +2508,13 @@ async function generateWithRotation(params) {
   // If no account has been plan-checked yet (planCheckedAt undefined), include them all.
   let pool = manager.getPool();
   if (needsCredits && creditCost > 0) {
+    // Skip CAPTCHA-challenged accounts for credit models (fall back to full pool if all challenged).
+    const now = Date.now();
+    const unchallenged = pool.filter(a => !(a.challengedUntil > now));
+    if (unchallenged.length > 0 && unchallenged.length < pool.length) {
+      addLog('INFO', `Credit model "${params.model}" — skipping ${pool.length - unchallenged.length} challenged account(s)`);
+      pool = unchallenged;
+    }
     const creditPool = pool.filter(a =>
       a.planCheckedAt == null ||          // not yet checked — include optimistically
       (a.credits != null && a.credits >= creditCost)
@@ -2426,7 +2603,7 @@ app.get('/v1/jobs', auth, (req, res) => {
 
 // ── POST /v1/images/generate ──────────────────────────────────────────────────
 app.post("/v1/images/generate", auth, async (req, res) => {
-  const { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model, variations = false, folder, resolution: rawResolution } = req.body || {};
+  const { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model, variations = false, folder, resolution: rawResolution, references } = req.body || {};
   const syncMode = req.query.wait === 'true';
 
   if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
@@ -2443,6 +2620,26 @@ app.post("/v1/images/generate", auth, async (req, res) => {
     return res.status(400).json({ error: `Model "${resolvedModel}" does not support resolution "${resolution}". Supported: ${modelInfo.resolutions?.join(', ') || 'none'}` });
   }
 
+  // Reference images — only for models that support them (refs:true). Each entry is
+  // { url, type? }, url = public URL or base64 data URL (the proxy uploads it to Magnific).
+  const refs = Array.isArray(references) ? references : [];
+  if (refs.length > 0) {
+    if (!modelInfo?.refs) {
+      return res.status(400).json({ error: `Model "${resolvedModel}" does not support reference images. Use a model with "refs": true — see GET /v1/models?type=image.` });
+    }
+    if (refs.length > modelInfo.refsLimit) {
+      return res.status(400).json({ error: `Model "${resolvedModel}" accepts at most ${modelInfo.refsLimit} reference image(s); got ${refs.length}.` });
+    }
+    for (const r of refs) {
+      if (!r || typeof r.url !== "string" || !r.url.trim()) {
+        return res.status(400).json({ error: `Each reference must be an object with a non-empty "url" (public URL or base64 data URL).` });
+      }
+      if (r.type && !IMAGE_REF_TYPES.includes(r.type)) {
+        return res.status(400).json({ error: `Invalid reference type "${r.type}". Allowed: ${IMAGE_REF_TYPES.join(", ")}.` });
+      }
+    }
+  }
+
   const genParams = {
     prompt,
     num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
@@ -2451,6 +2648,7 @@ app.post("/v1/images/generate", auth, async (req, res) => {
     variations: Boolean(variations),
     folder: folder || null,
     resolution: resolution || null,
+    references: refs,
   };
 
   if (syncMode) {
@@ -2889,6 +3087,10 @@ app.get("/v1/models", (req, res) => {
       type: "image",
       unlimited: m.unlimited,
       credits: m.credits || null,
+      refs: m.refs || false,
+      refs_limit: m.refsLimit || 0,
+      max_images: m.maxImages || 1,
+      resolutions: m.resolutions || ["1k"],
       note: m.note || null,
     })),
     total: models.length,
@@ -2900,10 +3102,12 @@ app.get("/v1/models", (req, res) => {
 
 // ── GET /health ───────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
+  const now = Date.now();
   const accounts = manager.accounts.map(a => ({
     name: a.name,
     userId: a.userId,
     status: a.status,
+    challenged: a.challengedUntil > now,
     tokenExpiry:  a.grTokenExpiry ? new Date(a.grTokenExpiry).toISOString() : null,
     slots_active: a.semaphore?.active ?? 0,
     slots_total:  a.semaphore?.slots  ?? SLOTS_PER_ACCOUNT,
@@ -2922,6 +3126,7 @@ app.get("/health", (req, res) => {
     accounts,
     total: accounts.length,
     active: activeAccounts.length,
+    challenged: accounts.filter(a => a.challenged).length,
     capacity: {
       slots_per_account: SLOTS_PER_ACCOUNT,
       total_slots: manager.totalCapacity,
@@ -2937,6 +3142,9 @@ app.get('/v1/accounts/plans', auth, (req, res) => {
     name:         a.name,
     email:        a.email || a.name,
     status:       a.status,
+    challenged:   a.challengedUntil > Date.now(),
+    challengeReason: (a.challengedUntil > Date.now()) ? (a.challengeReason || 'CAPTCHA / anti-bot challenge') : null,
+    challengedUntil: (a.challengedUntil > Date.now()) ? new Date(a.challengedUntil).toISOString() : null,
     plan:         a.plan        || null,
     planStatus:   a.planStatus  || null,
     isPremium:    a.isPremium   ?? null,

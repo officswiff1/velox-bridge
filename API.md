@@ -107,6 +107,9 @@ Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). 
   "aspect_ratio": "16:9",
   "resolution": "2k",
   "variations": false,
+  "references": [
+    { "url": "https://example.com/my-style.jpg", "type": "style" }
+  ],
   "folder": "a17a3809-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 }
 ```
@@ -119,6 +122,7 @@ Submits an image generation job. Returns a `job_id` **immediately** (HTTP 202). 
 | `aspect_ratio` | string | `"1:1"` | | `"1:1"` `"16:9"` `"9:16"` `"4:3"` `"3:4"` `"3:2"` `"2:3"` `"5:4"` `"4:5"` `"21:9"` |
 | `resolution` | string | `"1k"` | | Output quality tier: `"1k"` `"2k"` `"4k"`. Only valid for models that list `resolutions` in `GET /v1/models`. Returns HTTP 400 if the model does not support the requested tier. Aliases accepted: `"4K"` `"2160p"` `"uhd"` → `"4k"` · `"1440p"` → `"2k"` · `"1080p"` `"hd"` → `"1k"` |
 | `variations` | boolean | `false` | | Generate creative prompt variations |
+| `references` | array | `[]` | | Reference images that guide the generation. `[{"url": "...", "type": "style"}]`. Only for models where `refs: true` in `GET /v1/models?type=image`; max items = that model's `refs_limit`. See [Reference Images](#reference-images-references) below. |
 | `folder` | string | account default | | Space UUID — saves images into that folder |
 
 ### Response (async — HTTP 202)
@@ -210,6 +214,49 @@ These are Magnific's native 1K pixel dimensions per aspect ratio. At 2K dimensio
 | `21:9` | 1536 × 656 | 3072 × 1312 | 6144 × 2624 |
 
 > **Note:** Not all models support all aspect ratios. Models that support `resolution` are marked with a `resolutions` array in `GET /v1/models?type=image`. Requesting `"4k"` on a model without resolution support returns HTTP 400.
+
+### Reference Images (`references`)
+
+Reference images steer the look of the generation (style, character likeness, product, structure, etc.). Pass an array of `{ "url", "type" }` objects:
+
+```json
+{
+  "prompt": "a futuristic city skyline at sunset",
+  "model": "gpt-2",
+  "references": [
+    { "url": "https://example.com/neon-style.jpg", "type": "style" },
+    { "url": "data:image/png;base64,iVBORw0KGgo...", "type": "character" }
+  ]
+}
+```
+
+**URL format — no hosting required on your side.** Each `url` may be either a **public URL** or a **base64 data URL** (`data:image/png;base64,...`). The proxy uploads it to Magnific's temporal storage for you and passes the resulting reference token to the model — you do **not** need to pre-upload to S3/R2.
+
+**`type` (reference role)** — each reference must declare its role; this controls *how* the image influences the result. Defaults to `"style"` if omitted. Accepted roles:
+
+| `type` | Effect | Verified |
+|---|---|---|
+| `character` | **Reproduces the subject** from the reference (person/animal/object identity) | ✅ a black-dog reference reproduced the same dog with only the prompt "a professional photograph" |
+| `structure` | Follows the reference's **composition / structure / pose** (not its subject) | ✅ guides layout, generates a new scene |
+| `style` | Matches the **visual style / aesthetic** (default). Needs a real stylistic image — a flat solid color has no style to transfer | ✅ |
+| `product` | Keeps a **product's** appearance | — |
+| `sketch` | Use the image as a **line/sketch guide** | — |
+| `locations` | Reference a **location/scene** (woven into the prompt as a background) | — |
+
+> Pick the role for the result you want: use **`character`** to put the reference's subject into the output, **`structure`** to copy its composition, **`style`** to copy its look.
+
+> Not every model accepts every role. If a model rejects a role, the API returns **HTTP 400** with Magnific's exact reason (e.g. `The selected references.0.type is invalid.`) — it will not silently ignore the reference.
+
+**Which models support references & how many:** check `GET /v1/models?type=image` — each model reports `refs` (boolean) and `refs_limit` (max reference images). Examples: `gpt-2` → 16, `imagen-nano-banana-2` → 14, `flux-2` → 4, `grok` → 1. Passing references to a model with `refs: false`, or more than `refs_limit`, returns HTTP 400.
+
+**Validation errors:**
+
+| Condition | Response |
+|---|---|
+| Model has `refs: false` | `400` — model does not support reference images |
+| More refs than `refs_limit` | `400` — accepts at most N reference image(s) |
+| Missing/empty `url` | `400` — each reference needs a non-empty url |
+| Invalid `type` value | `400` — invalid reference type (proxy-side or Magnific-side) |
 
 ---
 
@@ -669,40 +716,49 @@ GET /v1/models?type=audio       → audio/TTS models (6)
 
 ### Response (image)
 
-Each image model includes reference-image support, max images per generation, and available resolution tiers:
+Each image model reports whether it's `unlimited`, its `credits` cost, reference-image support (`refs` / `refs_limit`), max images per generation (`max_images`), and available resolution tiers (`resolutions`):
 
 ```json
-[
-  {
-    "id": "flux-2",
-    "name": "Flux.2 Pro",
-    "type": "unlimited",
-    "credits": 0,
-    "refs": true,
-    "maxImages": 2,
-    "resolutions": ["1k", "2k"]
-  },
-  {
-    "id": "imagen-nano-banana-2-flash",
-    "name": "Google Nano Banana 2",
-    "type": "unlimited",
-    "credits": 0,
-    "refs": true,
-    "maxImages": 4,
-    "resolutions": ["1k", "2k"],
-    "note": "Gemini 3.1 Flash"
-  },
-  {
-    "id": "gpt-2",
-    "name": "GPT 2",
-    "type": "credits",
-    "credits": 200,
-    "refs": true,
-    "maxImages": 1,
-    "resolutions": ["1k", "2k", "4k"]
-  }
-]
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "flux-2",
+      "name": "Flux.2 Pro",
+      "type": "image",
+      "unlimited": true,
+      "credits": null,
+      "refs": true,
+      "refs_limit": 4,
+      "max_images": 2,
+      "resolutions": ["1k", "2k"],
+      "note": null
+    },
+    {
+      "id": "gpt-2",
+      "name": "GPT 2",
+      "type": "image",
+      "unlimited": false,
+      "credits": 200,
+      "refs": true,
+      "refs_limit": 16,
+      "max_images": 1,
+      "resolutions": ["1k", "2k", "4k"],
+      "note": null
+    }
+  ],
+  "total": 43,
+  "unlimited_count": 34,
+  "credits_count": 9
+}
 ```
+
+| Field | Description |
+|---|---|
+| `refs` | `true` if the model accepts reference images (`references[]`) |
+| `refs_limit` | Max number of reference images (0 when `refs: false`) |
+| `max_images` | Max images per single generation request |
+| `resolutions` | Quality tiers accepted in the `resolution` field (default `["1k"]`) |
 
 ### Response (video)
 
@@ -896,53 +952,53 @@ Returns the last 100 server log entries. Useful for debugging.
 
 Use any of these `id` values as the `model` field in `/v1/images/generate`. All IDs verified against Magnific's live API 2026-06-08.
 
-**Column key:** `refs` = supports `references[]` image input · `max` = max images per generation · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K)
+**Column key:** `refs` = max reference images accepted (`references[]`; — = not supported) · `max` = max images per generation · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K). `refs` values verified live from Magnific's `tti-modes` (`settings.maxReferences`), 2026-06-17.
 
 ### Unlimited — 34 models (no credits on Premium+/Pro)
 
 | Model ID | Name | refs | max | Resolutions |
 |---|---|---|---|---|
-| `auto` | Auto | ✅ | 4 | default |
+| `auto` | Auto | 8 | 4 | default |
 | **Flux.1 family** | | | | |
 | `flux` | Flux.1 Fast | — | 12 | default |
-| `flux-dev` | Flux.1 | ✅ | 8 | default |
+| `flux-dev` | Flux.1 | — | 8 | default |
 | `flux-realism` | Flux.1 Realism | — | 12 | default |
 | `flux-pro-plus` | Flux.1.1 | — | 12 | default |
-| `flux-kontext` | Flux.1 Kontext Pro | ✅ | 8 | default |
-| `flux-kontext-high` | Flux.1 Kontext Max | ✅ | 2 | default |
+| `flux-kontext` | Flux.1 Kontext Pro | 4 | 8 | default |
+| `flux-kontext-high` | Flux.1 Kontext Max | 4 | 2 | default |
 | **Flux.2 family** | | | | |
-| `flux-2` | Flux.2 Pro | ✅ | 2 | 1K, 2K |
-| `flux-2-klein` | Flux.2 Klein | ✅ | 2 | 1K, 2K |
-| `flux-2-flex` | Flux.2 Flex | ✅ | 4 | 1K, 2K |
+| `flux-2` | Flux.2 Pro | 4 | 2 | 1K, 2K |
+| `flux-2-klein` | Flux.2 Klein | 4 | 2 | 1K, 2K |
+| `flux-2-flex` | Flux.2 Flex | 4 | 4 | 1K, 2K |
 | **Classic** | | | | |
 | `fast` | Classic Fast | — | 12 | default |
 | `classic` | Classic | — | 12 | default |
 | **Mystic family** | | | | |
-| `mystic` | Mystic 1.0 | ✅ | 8 | default |
-| `mystic-2-5` | Mystic 2.5 | ✅ | 8 | default |
+| `mystic` | Mystic 1.0 | — | 8 | default |
+| `mystic-2-5` | Mystic 2.5 | — | 8 | default |
 | `mystic-2-5-flexible` | Mystic 2.5 Flexible | — | 12 | default |
 | `mystic-2-5-fluid` | Mystic 2.5 Fluid | — | 8 | default |
 | **Seedream family** | | | | |
-| `seedream-4-5` | Seedream 4.5 | ✅ | 4 | 2K, 4K |
-| `seedream-4` | Seedream 4 | ✅ | 4 | default |
-| `seedream-4-4k` | Seedream 4 4K | ✅ | 4 | default |
-| `seedream` | Seedream | ✅ | 4 | default |
+| `seedream-4-5` | Seedream 4.5 | 8 | 4 | 2K, 4K |
+| `seedream-4` | Seedream 4 | 8 | 4 | default |
+| `seedream-4-4k` | Seedream 4 4K | 8 | 4 | default |
+| `seedream` | Seedream | 8 | 4 | default |
 | **Google** | | | | |
-| `imagen-nano-banana` | Google Nano Banana | ✅ | 4 | default |
-| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | ✅ | 4 | 1K, 2K |
-| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | ✅ | 4 | 1K, 2K |
+| `imagen-nano-banana` | Google Nano Banana | 8 | 4 | default |
+| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | 14 | 4 | 1K, 2K |
+| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | 14 | 4 | 1K, 2K |
 | `imagen3` | Google Imagen 3 | — | 12 | default |
 | `imagen4-fast` | Google Imagen 4 Fast | — | 8 | default |
 | `imagen4` | Google Imagen 4 | — | 1 | default |
 | `imagen4-ultra` | Google Imagen 4 Ultra | — | 1 | default |
 | **Other** | | | | |
-| `ideogram` | Ideogram | ✅ | 2 | default |
+| `ideogram` | Ideogram | — | 2 | default |
 | `z-image` | Z-Image | — | 8 | default |
-| `gpt-medium` | GPT | ✅ | 1 | default |
-| `gpt-high` | GPT 1 - HQ | ✅ | 1 | default |
+| `gpt-medium` | GPT | 16 | 1 | default |
+| `gpt-high` | GPT 1 - HQ | 16 | 1 | default |
 | `recraft-v4-1` | Recraft V4.1 | — | 4 | default |
-| `runway-gen4` | Runway *(deprecated — still works)* | ✅ | 2 | default |
-| `reve` | Reve *(currently inactive)* | ✅ | 8 | default |
+| `runway-gen4` | Runway *(deprecated — still works)* | 3 | 2 | default |
+| `reve` | Reve *(currently inactive)* | 8 | 8 | default |
 
 > **Resolution tiers** for Nano Banana 2, Nano Banana Pro, Seedream 4.5: the `resolution` param controls output quality. `4K` produces the largest images. No separate model ID is needed — same model ID, different `resolution` value.
 
@@ -954,15 +1010,15 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 
 | Model ID | Name | Credits | refs | max | Resolutions |
 |---|---|---|---|---|---|
-| `flux-2-max` | Flux.2 Max | 65 | ✅ | 1 | 1K, 2K |
-| `seedream-5-lite` | Seedream 5 Lite | varies | ✅ | 4 | 2K, 3K |
-| `qwen` | Qwen | varies | ✅ | 2 | default |
-| `grok` | Grok | varies | ✅ | 8 | default |
+| `flux-2-max` | Flux.2 Max | 65 | 8 | 1 | 1K, 2K |
+| `seedream-5-lite` | Seedream 5 Lite | varies | 14 | 4 | 2K, 3K |
+| `qwen` | Qwen | varies | 3 | 2 | default |
+| `grok` | Grok | varies | 1 | 8 | default |
 | `recraft-v4` | Recraft V4 | varies | — | 4 | default |
 | `recraft-v4-pro` | Recraft V4 Pro | 175 | — | 4 | default |
-| `gpt-1-5-medium` | GPT 1.5 | 150 | ✅ | 1 | default |
-| `gpt-1-5-high` | GPT 1.5 - High | 500 | ✅ | 1 | default |
-| `gpt-2` | GPT 2 | 200 | ✅ | 1 | 1K, 2K, **4K** |
+| `gpt-1-5-medium` | GPT 1.5 | 150 | 8 | 1 | default |
+| `gpt-1-5-high` | GPT 1.5 - High | 500 | 8 | 1 | default |
+| `gpt-2` | GPT 2 | 200 | 16 | 1 | 1K, 2K, **4K** |
 
 > **"varies"** — `seedream-5-lite`, `qwen`, `grok`, and `recraft-v4` consume credits but their exact per-image cost is not exposed in the API. Check the Magnific billing page for current rates.
 
@@ -1419,7 +1475,7 @@ curl -X POST $BASE/v1/images/describe \
 ### Image tips
 - **Start with unlimited image models** — `flux-2`, `mystic-2-5`, `imagen-nano-banana-2-flash`, `auto` cost no credits and work out of the box
 - **4K image generation** — add `"resolution": "4k"` to any model whose `resolutions` array includes `"4k"`: `gpt-2`. Aliases `"4K"` / `"2160p"` / `"uhd"` are accepted and normalized. Returns HTTP 400 if the model doesn't support that tier. Note: `imagen-nano-banana-2` and `imagen-nano-banana-2-flash` are unlimited at 1K/2K only — 4K requires credits they may not have (returns 500)
-- **Reference images (`refs: true`)** — pass `references: [{"type": "image", "url": "..."}]`. Supported by 28 of 43 image models. Check the table in [Image Models](#image-models)
+- **Reference images (`refs: true`)** — pass `references: [{"type": "style", "url": "..."}]` (role must be `style`/`character`/`product`/etc., **not** generic `image`). Supported by 24 of 43 image models. URL can be a public URL or base64 data URL — the proxy uploads it for you. See [Reference Images](#reference-images-references)
 - **`gpt-medium` and `gpt-high`** are unlimited (no credits) — don't confuse with `gpt-1-5-medium`/`gpt-1-5-high` which cost credits
 - **`flux-2-flex`** is unlimited (not credit-based) and supports 1K/2K output
 
