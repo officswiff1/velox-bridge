@@ -229,9 +229,9 @@ const VIDEO_MODELS = [
   // ── Kling ────────────────────────────────────────────────────────────────────
   { id: 'kling-30',                      name: 'Kling 3.0',                  credits: 210,  api: 'kling',        videoModel: 'kling',             videoMode: '30',                sf: true,  ef: true,  refs: false,               resolutions: ['4K','1080p','720p'],        durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'kling-omni3',                   name: 'Kling 3.0 Omni',             credits: 210,  api: 'kling',        videoModel: 'kling',             videoMode: 'omni3',             sf: true,  ef: true,  refs: true,  refsLimit: 7,  resolutions: ['4K','1080p','720p'],        durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
-  { id: 'kling-motion-control-30',       name: 'Kling 3.0 Motion Control',   credits: 330,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control-30', sf: true,  ef: false, refs: false, sfRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
+  { id: 'kling-motion-control-30',       name: 'Kling 3.0 Motion Control',   credits: 330,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control-30', sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'kling-26',                      name: 'Kling 2.6',                  credits: 225,  api: 'kling',        videoModel: 'kling',             videoMode: '26',                sf: true,  ef: true,  refs: false,               resolutions: ['1080p'],                   durations: [5,10] },
-  { id: 'kling-motion-control',          name: 'Kling 2.6 Motion Control',   credits: 150,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control',    sf: true,  ef: false, refs: false, sfRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10] },
+  { id: 'kling-motion-control',          name: 'Kling 2.6 Motion Control',   credits: 150,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control',    sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10] },
   { id: 'kling-omni1',                   name: 'Kling O1',                   credits: 225,  api: 'kling',        videoModel: 'kling',             videoMode: 'omni1',             sf: true,  ef: true,  refs: true,  refsLimit: 7,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10] },
   { id: 'kling-25',                      name: 'Kling 2.5',                  credits: 0,    api: 'kling',        videoModel: 'kling',             videoMode: '25',                sf: true,  ef: true,  refs: false,               resolutions: ['1080p','720p'],             durations: [5,10], unlimited: true, unlimitedResolution: '720p' },
   { id: 'kling-21',                      name: 'Kling 2.1',                  credits: 275,  api: 'kling',        videoModel: 'kling',             videoMode: '21',                sf: true,  ef: true,  refs: false, sfRequired: true,  resolutions: ['1080p','720p'],             durations: [5,10] },
@@ -1266,9 +1266,10 @@ async function generateVideo(acc, {
   duration = 5,
   resolution = '720p',
   sound_effects = true,
-  start_image = null,     // URL — start frame (image-to-video)
-  end_image = null,       // URL — end frame (only models with ef:true)
-  references = [],        // [{ type, url }] — image/video/character/style/product refs
+  start_image = null,     // URL/base64 — start frame (image-to-video)
+  end_image = null,       // URL/base64 — end frame (only models with ef:true)
+  video = null,           // URL/base64 — motion reference video (keyframes.video, motion-control models)
+  references = [],        // [{ type, url }] — image/character/style/product refs (models with refs:true)
   prompt_mode = 'manual', // 'manual' | 'auto'
   folder = null,          // folder reference UUID — overrides account default
 }) {
@@ -1290,6 +1291,21 @@ async function generateVideo(acc, {
     endFrameCdnUrl = uploaded.endFrameUrl;
   }
 
+  // Motion-reference video (keyframes.video) and references must also be Magnific-hosted:
+  // Magnific rejects raw external URLs ("should be a URL from a valid domain"). Upload each
+  // to temporal storage (same flow as frames) and pass the returned pikaso CDN URL.
+  let videoCdnUrl = null;
+  if (video) videoCdnUrl = await uploadOneFrame(acc, video);
+
+  let uploadedReferences = [];
+  for (const ref of references) {
+    const url = await uploadOneFrame(acc, ref.url);
+    uploadedReferences.push({ type: ref.type || 'image', url });
+  }
+  if (uploadedReferences.length > 0 || videoCdnUrl) {
+    addLog('INFO', `[${acc.name}] Uploaded ${uploadedReferences.length} reference(s)${videoCdnUrl ? ' + motion video' : ''} for ${vm.id}`);
+  }
+
   const family = crypto.randomUUID();
 
   const clip = {
@@ -1305,11 +1321,12 @@ async function generateVideo(acc, {
     model: vm.videoModel,
     mode: vm.videoMode,
     slug: vm.id,
-    ...((startFrameCdnUrl || endFrameCdnUrl) ? { keyframes: {
+    ...((startFrameCdnUrl || endFrameCdnUrl || videoCdnUrl) ? { keyframes: {
       ...(startFrameCdnUrl ? { start: { type: 'image', url: startFrameCdnUrl } } : {}),
       ...(endFrameCdnUrl   ? { end:   { type: 'image', url: endFrameCdnUrl   } } : {}),
+      ...(videoCdnUrl      ? { video: { type: 'video', url: videoCdnUrl      } } : {}),
     }} : {}),
-    ...(references.length > 0 ? { references } : {}),
+    ...(uploadedReferences.length > 0 ? { references: uploadedReferences } : {}),
     extraParameters: vm.api === 'minimax' ? {} : { style: 'default' },
     withSoundEffects: vm.api === 'minimax' ? false : sound_effects,
     promptType: 'basic',
@@ -2723,6 +2740,7 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
     sound_effects = true,
     start_image = null,
     end_image = null,
+    video = null,
     references = [],
     prompt_mode = "manual",
     folder = null,
@@ -2737,7 +2755,14 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
   if (start_image && !vm.sf) return res.status(400).json({ error: `Model "${model}" does not support start_image` });
   if (!start_image && vm.sfRequired) return res.status(400).json({ error: `Model "${model}" requires start_image` });
   if (end_image   && !vm.ef) return res.status(400).json({ error: `Model "${model}" does not support end_image` });
-  if (references.length > 0 && !vm.refs) return res.status(400).json({ error: `Model "${model}" does not support references` });
+  if (video       && !vm.vid) return res.status(400).json({ error: `Model "${model}" does not support a video input. Video input is for motion-control models (e.g. kling-motion-control-30).` });
+  if (!video      && vm.vidRequired) return res.status(400).json({ error: `Model "${model}" requires a "video" input (the motion reference video) plus a "start_image".` });
+  const refList = Array.isArray(references) ? references : [];
+  if (refList.length > 0 && !vm.refs) return res.status(400).json({ error: `Model "${model}" does not support references` });
+  if (refList.length > 0 && vm.refsLimit && refList.length > vm.refsLimit) return res.status(400).json({ error: `Model "${model}" accepts at most ${vm.refsLimit} reference(s); got ${refList.length}.` });
+  for (const r of refList) {
+    if (!r || typeof r.url !== "string" || !r.url.trim()) return res.status(400).json({ error: `Each reference must be an object with a non-empty "url" (public URL or base64 data URL).` });
+  }
 
   const effectiveResolution = vm.maxResolution
     ? (['480p','720p','1080p'].indexOf(resolution) > ['480p','720p','1080p'].indexOf(vm.maxResolution) ? vm.maxResolution : resolution)
@@ -2748,8 +2773,8 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
     duration: Math.min(Math.max(parseInt(duration) || 5, 1), 10),
     resolution: effectiveResolution,
     sound_effects: Boolean(sound_effects),
-    start_image, end_image,
-    references: Array.isArray(references) ? references : [],
+    start_image, end_image, video,
+    references: refList,
     prompt_mode: prompt_mode === 'auto' ? 'auto' : 'manual',
     folder,
   };
@@ -3068,8 +3093,12 @@ app.get("/v1/models", (req, res) => {
         credits: m.credits,
         features: {
           start_image: m.sf || false,
+          start_image_required: m.sfRequired || false,
           end_image:   m.ef || false,
+          video_input: m.vid || false,          // motion reference video (keyframes.video)
+          video_required: m.vidRequired || false,
           references:  m.refs || false,
+          refs_limit:  m.refsLimit || 0,
         },
       })),
       total: VIDEO_MODELS.length,

@@ -536,10 +536,22 @@ Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). P
 | `resolution` | string | model default | | Output resolution — e.g. `"720p"` `"1080p"` `"4K"` `"2160p"`. Valid values depend on model — check `resolutions` in `GET /v1/models?type=video`. For unlimited models, requesting a resolution above the free tier costs credits. |
 | `sound_effects` | boolean | `true` | | Auto-generate sound effects (not supported on MiniMax models — ignored) |
 | `start_image` | string | `null` | ⚠️ Required for some models | Start frame URL or base64 data URL (image-to-video). Check `features.start_image_required` in `GET /v1/models?type=video` — if `true`, omitting returns HTTP 400. If `features.start_image` is `false`, passing it returns HTTP 400. |
-| `end_image` | string | `null` | | End frame URL or base64. Only on models where `features.end_image = true`. |
-| `references` | array | `[]` | | Reference media: `[{"type": "image"\|"video"\|"style"\|"character"\|"product"\|"audio", "url": "..."}]`. Only on models where `features.references = true`. Max items = `features.refs_limit`. |
+| `end_image` | string | `null` | | End frame URL or base64. Only on models where `features.end_image = true` (e.g. `kling-30` supports both first **and** last frame). |
+| `video` | string | `null` | ⚠️ Required for motion-control models | Motion reference **video** URL or base64 (the movement to copy). Only on models where `features.video_input = true` (e.g. `kling-motion-control-30`, `kling-motion-control`), which also require a `start_image`. Public URL or base64 — the proxy uploads it to Magnific for you. |
+| `references` | array | `[]` | | Reference media: `[{"type": "image"\|"character"\|"style"\|"product", "url": "..."}]`. `url` may be a **public URL or base64 data URL** — the proxy uploads it to Magnific (raw external URLs are rejected by Magnific). Only on models where `features.references = true`; max items = `features.refs_limit`. |
 | `prompt_mode` | string | `"manual"` | | `"manual"` = use prompt exactly, `"auto"` = model re-interprets |
 | `folder` | string | account default | | Folder UUID — saves video into that space |
+
+**Kling 3.0 — first + last frame** (`kling-30` supports both):
+```json
+{ "model": "kling-30", "prompt": "a smooth transition", "start_image": "https://.../first.jpg", "end_image": "https://.../last.jpg" }
+```
+
+**Kling 3.0 Motion Control — copy motion from a video** (`video` + `start_image` both required):
+```json
+{ "model": "kling-motion-control-30", "prompt": "the character dances",
+  "start_image": "https://.../character.jpg", "video": "https://.../motion.mp4" }
+```
 
 ### Response (async — HTTP 202)
 
