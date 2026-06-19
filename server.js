@@ -229,9 +229,9 @@ const VIDEO_MODELS = [
   // ── Kling ────────────────────────────────────────────────────────────────────
   { id: 'kling-30',                      name: 'Kling 3.0',                  credits: 210,  api: 'kling',        videoModel: 'kling',             videoMode: '30',                sf: true,  ef: true,  refs: false,               resolutions: ['4K','1080p','720p'],        durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'kling-omni3',                   name: 'Kling 3.0 Omni',             credits: 210,  api: 'kling',        videoModel: 'kling',             videoMode: 'omni3',             sf: true,  ef: true,  refs: true,  refsLimit: 7,  resolutions: ['4K','1080p','720p'],        durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
-  { id: 'kling-motion-control-30',       name: 'Kling 3.0 Motion Control',   credits: 330,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control-30', sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
+  { id: 'kling-motion-control-30',       name: 'Kling 3.0 Motion Control',   credits: 330,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control-30', sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  noFixedDuration: true,  resolutions: ['1080p','720p'] },
   { id: 'kling-26',                      name: 'Kling 2.6',                  credits: 225,  api: 'kling',        videoModel: 'kling',             videoMode: '26',                sf: true,  ef: true,  refs: false,               resolutions: ['1080p'],                   durations: [5,10] },
-  { id: 'kling-motion-control',          name: 'Kling 2.6 Motion Control',   credits: 150,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control',    sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10] },
+  { id: 'kling-motion-control',          name: 'Kling 2.6 Motion Control',   credits: 150,  api: 'kling',        videoModel: 'kling',             videoMode: 'motion-control',    sf: true,  ef: false, refs: false, sfRequired: true,  vid: true, vidRequired: true,  noFixedDuration: true,  resolutions: ['1080p','720p'] },
   { id: 'kling-omni1',                   name: 'Kling O1',                   credits: 225,  api: 'kling',        videoModel: 'kling',             videoMode: 'omni1',             sf: true,  ef: true,  refs: true,  refsLimit: 7,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10] },
   { id: 'kling-25',                      name: 'Kling 2.5',                  credits: 0,    api: 'kling',        videoModel: 'kling',             videoMode: '25',                sf: true,  ef: true,  refs: false,               resolutions: ['1080p','720p'],             durations: [5,10], unlimited: true, unlimitedResolution: '720p' },
   { id: 'kling-21',                      name: 'Kling 2.1',                  credits: 275,  api: 'kling',        videoModel: 'kling',             videoMode: '21',                sf: true,  ef: true,  refs: false, sfRequired: true,  resolutions: ['1080p','720p'],             durations: [5,10] },
@@ -1316,7 +1316,9 @@ async function generateVideo(acc, {
     family,
     aspectRatio: aspect_ratio,
     cameraMotion: null,
-    duration: vm.defaultDuration || duration,
+    // Motion-control has no fixed duration — output length follows the uploaded motion
+    // video (Magnific's UI has no duration picker). Omit duration so we don't override it.
+    ...(vm.noFixedDuration ? {} : { duration: vm.defaultDuration || duration }),
     api: vm.api,
     model: vm.videoModel,
     mode: vm.videoMode,
@@ -2770,7 +2772,9 @@ app.post("/v1/videos/generate", auth, async (req, res) => {
 
   const genParams = {
     prompt, model, negative_prompt, aspect_ratio,
-    duration: Math.min(Math.max(parseInt(duration) || 5, 1), 10),
+    // Motion-control models have no fixed duration (output follows the motion video) —
+    // don't clamp or send a duration; the uploaded video length wins (Magnific allows up to 30s).
+    duration: vm.noFixedDuration ? null : Math.min(Math.max(parseInt(duration) || 5, 1), 10),
     resolution: effectiveResolution,
     sound_effects: Boolean(sound_effects),
     start_image, end_image, video,

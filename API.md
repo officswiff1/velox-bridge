@@ -532,12 +532,12 @@ Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). P
 | `model` | string | `"bytedance-seedance-fast-2.0"` | | Video model ID — see [Video Models](#video-models) below |
 | `negative_prompt` | string | `""` | | Things to avoid in the video |
 | `aspect_ratio` | string | `"16:9"` | | `"16:9"` `"9:16"` `"1:1"` (support varies by model) |
-| `duration` | number | `5` | | Duration in seconds — valid values depend on model (e.g. `[5,10]` for Kling, `[4,6,8]` for Veo, `1–15` for PixVerse). Check `durations` in `GET /v1/models?type=video`. |
+| `duration` | number | `5` | | Duration in seconds — valid values depend on model (e.g. `[5,10]` for Kling, `[4,6,8]` for Veo, `1–15` for PixVerse). Check `durations` in `GET /v1/models?type=video`. **Ignored by motion-control models** (`features.video_input = true`): they have no fixed duration — the output length follows the uploaded `video` (up to ~30s). |
 | `resolution` | string | model default | | Output resolution — e.g. `"720p"` `"1080p"` `"4K"` `"2160p"`. Valid values depend on model — check `resolutions` in `GET /v1/models?type=video`. For unlimited models, requesting a resolution above the free tier costs credits. |
 | `sound_effects` | boolean | `true` | | Auto-generate sound effects (not supported on MiniMax models — ignored) |
 | `start_image` | string | `null` | ⚠️ Required for some models | Start frame URL or base64 data URL (image-to-video). Check `features.start_image_required` in `GET /v1/models?type=video` — if `true`, omitting returns HTTP 400. If `features.start_image` is `false`, passing it returns HTTP 400. |
 | `end_image` | string | `null` | | End frame URL or base64. Only on models where `features.end_image = true` (e.g. `kling-30` supports both first **and** last frame). |
-| `video` | string | `null` | ⚠️ Required for motion-control models | Motion reference **video** URL or base64 (the movement to copy). Only on models where `features.video_input = true` (e.g. `kling-motion-control-30`, `kling-motion-control`), which also require a `start_image`. Public URL or base64 — the proxy uploads it to Magnific for you. |
+| `video` | string | `null` | ⚠️ Required for motion-control models | Motion reference **video** URL or base64 (the movement to copy). Only on models where `features.video_input = true` (e.g. `kling-motion-control-30`, `kling-motion-control`), which also require a `start_image`. Public URL or base64 — the proxy uploads it to Magnific for you. The **output length matches this video** (no `duration` needed; videos up to ~30s accepted). |
 | `references` | array | `[]` | | Reference media: `[{"type": "image"\|"character"\|"style"\|"product", "url": "..."}]`. `url` may be a **public URL or base64 data URL** — the proxy uploads it to Magnific (raw external URLs are rejected by Magnific). Only on models where `features.references = true`; max items = `features.refs_limit`. |
 | `prompt_mode` | string | `"manual"` | | `"manual"` = use prompt exactly, `"auto"` = model re-interprets |
 | `folder` | string | account default | | Folder UUID — saves video into that space |
@@ -1077,9 +1077,9 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. All 
 |---|---|---|---|---|---|---|---|
 | `kling-30` | Kling 3.0 | 210 | ✅ | ✅ | — | **4K**, 1080p, 720p | 3–15 |
 | `kling-omni3` | Kling 3.0 Omni | 210 | ✅ | ✅ | ✅ up to 7 | **4K**, 1080p, 720p | 3–15 |
-| `kling-motion-control-30` | Kling 3.0 Motion Control | 330 | ⚠️ | — | — | 1080p, 720p | 3–15 |
+| `kling-motion-control-30` | Kling 3.0 Motion Control | 330 | ⚠️ | — | 🎬 video | 1080p, 720p | follows video |
 | `kling-26` | Kling 2.6 | 225 | ✅ | ✅ | — | 1080p | 5, 10 |
-| `kling-motion-control` | Kling 2.6 Motion Control | 150 | ⚠️ | — | — | 1080p, 720p | 3–10 |
+| `kling-motion-control` | Kling 2.6 Motion Control | 150 | ⚠️ | — | 🎬 video | 1080p, 720p | follows video |
 | `kling-omni1` | Kling O1 | 225 | ✅ | ✅ | ✅ up to 7 | 1080p, 720p | 3–10 |
 | `kling-21` | Kling 2.1 | 275 | ⚠️ | ✅ | — | 1080p, 720p | 5, 10 |
 | `kling-21-master` | Kling 2.1 Master | 1400 | ✅ | — | — | 1080p | 5, 10 |
@@ -1168,6 +1168,8 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. All 
 "references": [{ "type": "image", "url": "https://..." }]
 ```
 The number shown (e.g. "up to 9") is the maximum number of reference items the model accepts.
+
+**`🎬 video` (motion-control models)** — these take a motion reference **video** in the `video` field (plus a required `start_image`). They have **no fixed duration**: omit `duration` — the output length follows the uploaded motion video (Magnific accepts videos up to ~30s; a 25s motion video is fine). `duration` is ignored if sent.
 
 **Resolutions** — pass as the `resolution` field. The first listed is the highest quality. Lower resolutions are faster and cheaper. For unlimited models, the "Free resolution" column shows which tier is included at no credit cost.
 
