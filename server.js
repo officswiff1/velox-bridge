@@ -1459,8 +1459,9 @@ async function generateVideo(acc, {
             : `Insufficient credits for model "${vm.id}" (requires ${vm.credits} credits)`;
         } else if (errorCode === 408001) {
           // Magnific/provider-side generation timeout (NOT the proxy's poll window).
-          // Heavy configs (e.g. Veo 3.1 at 4K) exceed Magnific's own generation limit.
-          reason = `Magnific timed out generating this video (errorCode 408001). This is a Magnific/provider-side limit, not the proxy. "${vm.id}" at ${resolution} is likely too heavy — try a lower resolution (e.g. 1080p) or a shorter duration.`;
+          // Intermittent under provider load — NOT a hard limit: verified that "${vm.id}"
+          // at 4K can also complete normally (~6 min). So retry first.
+          reason = `Magnific/provider-side generation timeout (errorCode 408001) — not the proxy. This is intermittent (provider load), not a hard limit: "${vm.id}" at ${resolution} often completes fine on retry. Retry the request; if it keeps failing, try again off-peak or at a lower resolution / shorter duration.`;
         } else {
           reason = `Generation failed (errorCode ${errorCode || 'unknown'})`;
         }

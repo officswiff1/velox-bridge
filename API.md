@@ -510,7 +510,7 @@ Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). P
 
 **Generation time:** 2–10 minutes for most models. **Slow premium models — Veo 3.1, Veo 2, Sora, Runway, LTX, and any "master" / 800+ credit model — can take longer**, so the proxy polls them for up to **20 minutes** (others 10 min). Always use the **async flow** for these (omit `?wait`, poll `/v1/jobs/:id`); `?wait=true` holds the HTTP connection open and may be dropped by your client or an upstream proxy before a long job finishes.
 
-> **4K and timeouts (`errorCode 408001`):** This is **Magnific's own** generation timeout (provider-side), not the proxy's poll window — the proxy reports it verbatim and cannot extend it. Heavy configs like **Veo 3.1 at 4K** regularly exceed Magnific's limit and fail with `408001`. If you hit it, drop to **1080p** (or a shorter duration) — that completes reliably. The proxy's own poll timeout is a *different* message (`"Video generation timed out after N minutes … poll /v1/jobs/:id"`).
+> **`errorCode 408001` (intermittent):** This is **Magnific's own / the provider's** generation timeout (read from the failed creation's `metadata.errorCode`), not the proxy's poll window — the proxy reports it verbatim and cannot extend it. It is **intermittent (provider-side load), not a hard 4K limit**: a direct test of `google-veo3_1` text-to-video at 8s completed **4K in ~6.4 min and 1080p in ~2.1 min** with no 408001. So if you hit it, **retry first** — it usually succeeds. If it persists, try off-peak, a lower resolution, or a shorter duration. The proxy's *own* poll timeout is a **different** message (`"Video generation timed out after N minutes … poll /v1/jobs/:id"`).
 
 ### Request
 
@@ -1279,9 +1279,9 @@ Returned immediately when all plan-checked accounts are confirmed under the cred
 { "error": "Model \"bytedance-seedance-fast-2.0\" does not support end_image" }
 ```
 
-**Magnific/provider-side generation timeout (e.g. Veo 3.1 at 4K):**
+**Magnific/provider-side generation timeout (intermittent — retry):**
 ```json
-{ "error": "Video generation failed: Magnific timed out generating this video (errorCode 408001). This is a Magnific/provider-side limit, not the proxy. \"google-veo3_1\" at 4K is likely too heavy — try a lower resolution (e.g. 1080p) or a shorter duration." }
+{ "error": "Video generation failed: Magnific/provider-side generation timeout (errorCode 408001) — not the proxy. This is intermittent (provider load), not a hard limit: \"google-veo3_1\" at 4K often completes fine on retry. Retry the request; if it keeps failing, try again off-peak or at a lower resolution / shorter duration." }
 ```
 
 **Proxy poll window exceeded (separate from 408001 — proxy stopped waiting):**
