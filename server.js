@@ -1257,6 +1257,18 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
 
 // ── Express app ───────────────────────────────────────────────────────────────
 
+// How long the proxy keeps polling for a video result before giving up. Slow premium
+// models (Veo / Sora / Runway / LTX / masters / 800+ credit) can legitimately exceed
+// 10 min, so we give them more headroom — otherwise the PROXY becomes the bottleneck.
+// NOTE: this is separate from Magnific's own generation timeout (errorCode 408001),
+// which we cannot extend from here.
+function videoPollTimeoutMs(vm) {
+  const slow = ['google', 'openai', 'runway', 'ltx'].includes(vm.api)
+    || (vm.credits || 0) >= 800
+    || /master/.test(vm.id);
+  return slow ? 1200000 : 600000; // 20 min for slow models, else 10 min
+}
+
 // ── Video generation ──────────────────────────────────────────────────────────
 async function generateVideo(acc, {
   prompt,
@@ -1393,8 +1405,9 @@ async function generateVideo(acc, {
   const identifier = creation.identifier;
   addLog('INFO', `[${acc.name}] Video queued — id=${creation.id} identifier=${identifier} model=${vm.id}`);
 
-  // Poll /app/api/creations until status = completed or failed (10 min max)
-  const deadline = Date.now() + 600000;
+  // Poll /app/api/creations until status = completed or failed.
+  const pollMs = videoPollTimeoutMs(vm);
+  const deadline = Date.now() + pollMs;
   while (Date.now() < deadline) {
     await sleep(10000);
 
@@ -1444,6 +1457,10 @@ async function generateVideo(acc, {
           reason = hasCredits
             ? `Model "${vm.id}" is temporarily unavailable or at capacity — try again in a few minutes`
             : `Insufficient credits for model "${vm.id}" (requires ${vm.credits} credits)`;
+        } else if (errorCode === 408001) {
+          // Magnific/provider-side generation timeout (NOT the proxy's poll window).
+          // Heavy configs (e.g. Veo 3.1 at 4K) exceed Magnific's own generation limit.
+          reason = `Magnific timed out generating this video (errorCode 408001). This is a Magnific/provider-side limit, not the proxy. "${vm.id}" at ${resolution} is likely too heavy — try a lower resolution (e.g. 1080p) or a shorter duration.`;
         } else {
           reason = `Generation failed (errorCode ${errorCode || 'unknown'})`;
         }
@@ -1454,7 +1471,7 @@ async function generateVideo(acc, {
     }
   }
 
-  throw new Error('Video generation timed out after 10 minutes');
+  throw new Error(`Video generation timed out after ${Math.round(pollMs / 60000)} minutes with no result from Magnific (the proxy stopped polling). Use the async flow (omit ?wait, poll /v1/jobs/:id) for slow models.`);
 }
 
 // ── Audio generation ──────────────────────────────────────────────────────────

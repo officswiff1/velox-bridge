@@ -504,11 +504,13 @@ List the last 100 jobs (all types, most recent first).
 
 ## POST /v1/videos/generate
 
-Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). Poll `GET /v1/jobs/:id` every 10 seconds for the result. Add `?wait=true` for legacy sync (connection held open, 10 min timeout).
+Submits a video generation job. Returns a `job_id` **immediately** (HTTP 202). Poll `GET /v1/jobs/:id` every 10 seconds for the result. Add `?wait=true` for legacy sync (connection held open).
 
 **Typical job time:** 1–5 minutes depending on model.
 
-**Generation time:** 2–10 minutes depending on model. Use a long HTTP timeout (15+ minutes) or implement async retry on your client.
+**Generation time:** 2–10 minutes for most models. **Slow premium models — Veo 3.1, Veo 2, Sora, Runway, LTX, and any "master" / 800+ credit model — can take longer**, so the proxy polls them for up to **20 minutes** (others 10 min). Always use the **async flow** for these (omit `?wait`, poll `/v1/jobs/:id`); `?wait=true` holds the HTTP connection open and may be dropped by your client or an upstream proxy before a long job finishes.
+
+> **4K and timeouts (`errorCode 408001`):** This is **Magnific's own** generation timeout (provider-side), not the proxy's poll window — the proxy reports it verbatim and cannot extend it. Heavy configs like **Veo 3.1 at 4K** regularly exceed Magnific's limit and fail with `408001`. If you hit it, drop to **1080p** (or a shorter duration) — that completes reliably. The proxy's own poll timeout is a *different* message (`"Video generation timed out after N minutes … poll /v1/jobs/:id"`).
 
 ### Request
 
@@ -1277,9 +1279,14 @@ Returned immediately when all plan-checked accounts are confirmed under the cred
 { "error": "Model \"bytedance-seedance-fast-2.0\" does not support end_image" }
 ```
 
-**Timed out (10 min server-side poll exceeded):**
+**Magnific/provider-side generation timeout (e.g. Veo 3.1 at 4K):**
 ```json
-{ "error": "Video generation timed out after 10 minutes" }
+{ "error": "Video generation failed: Magnific timed out generating this video (errorCode 408001). This is a Magnific/provider-side limit, not the proxy. \"google-veo3_1\" at 4K is likely too heavy — try a lower resolution (e.g. 1080p) or a shorter duration." }
+```
+
+**Proxy poll window exceeded (separate from 408001 — proxy stopped waiting):**
+```json
+{ "error": "Video generation timed out after 20 minutes with no result from Magnific (the proxy stopped polling). Use the async flow (omit ?wait, poll /v1/jobs/:id) for slow models." }
 ```
 
 ---
@@ -1388,7 +1395,7 @@ async function generateVideo(prompt, model = 'kling-25') {
     method: 'POST', headers: HEADERS,
     body: JSON.stringify({ prompt, model, aspect_ratio: '16:9' }),
   }).then(r => r.json());
-  const result = await pollJob(job_id, retry_after * 1000, 600000); // 10 min max
+  const result = await pollJob(job_id, retry_after * 1000, 1500000); // 25 min max — slow models (Veo/Sora/Runway) can take up to 20 min server-side
   return result.url; // CDN video URL
 }
 
