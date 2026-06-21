@@ -429,6 +429,43 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 }
 ```
 
+### ✅ Verified end-to-end example (live)
+
+Tested against the live deployment — full request and the **actual** response it returned:
+
+```bash
+curl -X POST "https://freepik-api-qg08.onrender.com/v1/images/upscale" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=900&q=80",
+    "scale": 2
+  }'
+```
+
+Response (~20 s, sync — the upscaled image is ready immediately):
+
+```json
+{
+  "created": 1782034654,
+  "data": {
+    "url": "https://pikaso.cdnpk.net/private/production/4659169063/render-optimized.jpg?token=exp=1782259200~hmac=…",
+    "preview_url": "https://pikaso.cdnpk.net/private/production/4659169063/render-optimized.jpg?token=…&preview=1",
+    "width": null,
+    "height": null,
+    "scale": 2,
+    "mode": "enhance-magnific-creative",
+    "model": "magnific",
+    "engine": "automatic",
+    "preset": "subtle",
+    "id": "kLhoROp16B",
+    "family": "feb23872-1ec5-446e-8cee-5164225ffe3c"
+  },
+  "account": "marketing@modifyed.in"
+}
+```
+
+`data.url` is the full-resolution upscaled image on Magnific's CDN (the token-signed link expires ~24 h — download promptly). `width`/`height` are reported as `null` by Magnific for upscales (the output is the input size × `scale`). Local files: replace `image_url` with a base64 data URL (`"data:image/jpeg;base64,…"`).
+
 ---
 
 ## POST /v1/upload
