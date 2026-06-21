@@ -1885,6 +1885,17 @@ async function describeImageWithRotation(imageSource) {
   });
 }
 
+// Return a base64 data URL for a source image (data: passthrough, or download a URL).
+// Used by the upscaler, which must receive the pixels INLINE so Magnific can read the
+// dimensions for credit calc (a "temporal:" reference no longer carries size).
+async function toDataUrl(src) {
+  if (src.startsWith('data:')) return src;
+  const r = await fetch(src, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) });
+  if (!r.ok) throw Object.assign(new Error(`Failed to fetch image (HTTP ${r.status}) from ${src.slice(0, 120)}`), { status: 400 });
+  const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+  return `data:${ct};base64,${Buffer.from(await r.arrayBuffer()).toString('base64')}`;
+}
+
 async function upscaleImage(acc, {
   image_url,
   creation_id  = null,         // Magnific creation ID (preferred) — "id" from /v1/images/generate
@@ -1911,7 +1922,7 @@ async function upscaleImage(acc, {
   // calculation". So we send image_url / base64 inline as a data URL (verified working).
   let inputImage;
   if (image_url) {
-    inputImage = await toReferenceDataUrl(image_url); // data: passthrough, or download URL → base64
+    inputImage = await toDataUrl(image_url); // data: passthrough, or download URL → base64
   } else if (creation_id) {
     // A real creation id (from /v1/images/generate) carries dimensions and works.
     // A "temporal:" id (from /v1/upload) does NOT — Magnific can't size it; pass
