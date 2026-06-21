@@ -1904,15 +1904,21 @@ async function upscaleImage(acc, {
   if (folder) acc = { ...acc, folderRef: folder };
   await refreshSession(acc, 'image-upscaler');
 
-  // Resolve input_image — must be "creation:{id}" format
+  // Resolve input_image. Magnific computes the upscale credit cost from the input's
+  // pixel size, and it can only read that from INLINE image bytes (a base64 data URL)
+  // or a real stored creation. A describe?tool=upload "temporal:" reference no longer
+  // carries dimensions, so Magnific 422s "Could not determine image size for credit
+  // calculation". So we send image_url / base64 inline as a data URL (verified working).
   let inputImage;
-  if (creation_id) {
-    // Accept temporal: (from /v1/upload) or creation: prefix, or bare identifier
+  if (image_url) {
+    inputImage = await toReferenceDataUrl(image_url); // data: passthrough, or download URL → base64
+  } else if (creation_id) {
+    // A real creation id (from /v1/images/generate) carries dimensions and works.
+    // A "temporal:" id (from /v1/upload) does NOT — Magnific can't size it; pass
+    // image_url/base64 instead for uploads.
     inputImage = (creation_id.startsWith('creation:') || creation_id.startsWith('temporal:'))
       ? creation_id
       : `creation:${creation_id}`;
-  } else if (image_url) {
-    inputImage = await uploadImageForUpscale(acc, image_url);
   } else {
     throw Object.assign(new Error('Either image_url or creation_id is required'), { status: 400 });
   }

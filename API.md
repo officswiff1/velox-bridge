@@ -387,8 +387,8 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `image_url` | string | required* | Public URL of image to upscale |
-| `creation_id` | string | required* | Alternative to `image_url` — use ID from `POST /v1/upload` for local files |
+| `image_url` | string | required* | Public URL **or base64 data URL** of the image to upscale. The proxy sends the pixels inline so Magnific can size it — **recommended path for any uploaded/local image.** |
+| `creation_id` | string | required* | Alternative to `image_url` — a **real creation id** from `POST /v1/images/generate` (the `id` field). ⚠️ A `temporal:` id from `POST /v1/upload` will fail with 422 (see below) — use `image_url` / base64 for local files instead. |
 | `mode` | string | `"creative"` | `"creative"` — AI-enhanced detail \| `"precision"` — faithful upscale |
 | `model` | string | `"magnific"` | `"magnific"` \| `"classic"` |
 | `scale` | number | `2` | `2` \| `4` \| `8` |
@@ -402,6 +402,10 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 | `folder` | string | account default | Space reference UUID to save into |
 
 *One of `image_url` or `creation_id` is required.
+
+> **Local files / base64:** pass the image as a base64 data URL in `image_url` (e.g. `"data:image/jpeg;base64,…"`). The proxy forwards the pixels inline so Magnific can read the dimensions for its credit calculation.
+>
+> **422 `Could not determine image size for credit calculation`:** Magnific computes the upscale cost from the input's pixel size, which it can only read from inline image bytes or a real stored creation — **not** from a `temporal:` upload reference. The proxy now sends `image_url`/base64 inline, so this is fixed. If you still hit it, you passed a `temporal:` `creation_id` (from `/v1/upload`); switch to `image_url`/base64 or a real `/v1/images/generate` creation id.
 
 ### Response
 
@@ -429,7 +433,9 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 
 ## POST /v1/upload
 
-Uploads a local image (base64) to Magnific and returns a `creation_id` for use with `POST /v1/images/upscale`. Use this when you have a local file rather than a public URL.
+Uploads a local image (base64) to Magnific and returns a `temporal:` `creation_id`.
+
+> ⚠️ **Not recommended for upscaling anymore.** Magnific can no longer determine the image size from a `temporal:` reference, so passing this `creation_id` to `/v1/images/upscale` returns 422. For local files, **pass the base64 data URL directly in `image_url`** on `/v1/images/upscale` instead — the proxy inlines the pixels and it works. This endpoint remains for other flows that accept `temporal:` references.
 
 ### Request
 
