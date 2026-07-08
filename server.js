@@ -870,6 +870,9 @@ async function refreshSession(acc, page = 'ai-image-generator') {
     });
 
     const setCookies = r.headers.getSetCookie ? r.headers.getSetCookie() : [];
+    // Cancel body immediately — we only need Set-Cookie headers, not the full HTML page.
+    // Without this, Node.js downloads the entire Magnific SPA (~300-500 KB) on every call.
+    r.body?.cancel().catch(() => {});
     let refreshed = false;
 
     for (const raw of setCookies) {
@@ -990,21 +993,46 @@ async function deleteCreations(acc, integerIds) {
   }
 }
 
+// Pre-download all URL-based references into buffers ONCE before rotation starts.
+// This prevents re-downloading the same image for every account the rotation tries.
+// Returns a Map keyed by the original URL string → { buf, mime }.
+async function prefetchRefBuffers(references) {
+  const cache = new Map();
+  await Promise.all((references || []).map(async ref => {
+    const url = ref?.url?.trim();
+    if (!url || url.startsWith("data:") || cache.has(url)) return;
+    try {
+      const r = await fetch(url, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
+      if (!r.ok) return; // let uploadReferenceTemporal surface the error per-account
+      const buf  = Buffer.from(await r.arrayBuffer());
+      const mime = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+      cache.set(url, { buf, mime });
+    } catch { /* ignore — error surfaces in uploadReferenceTemporal */ }
+  }));
+  return cache;
+}
+
 // Upload a reference image to Magnific's temporal storage and return the reference
 // token Magnific expects: "temporal:{filename}". (Verified live: start-tti-v2/render
 // reject raw base64 — they want "creation:id", "temporal:filename", or
 // "character-generator-reference:id".) Accepts a base64 data URL or a public/remote URL.
-async function uploadReferenceTemporal(acc, src) {
+// Pass prefetchedBufs (from prefetchRefBuffers) to avoid re-downloading on every rotation attempt.
+async function uploadReferenceTemporal(acc, src, prefetchedBufs = null) {
   let buf, mime;
   if (src.startsWith("data:")) {
     const m = src.match(/^data:([^;]+);base64,(.+)$/);
     if (!m) throw Object.assign(new Error("Invalid data URL for reference image"), { status: 400 });
     mime = m[1]; buf = Buffer.from(m[2], "base64");
   } else {
-    const r = await fetch(src, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
-    if (!r.ok) throw Object.assign(new Error(`Failed to fetch reference image (HTTP ${r.status}) from ${src.slice(0, 120)}`), { status: 400 });
-    buf = Buffer.from(await r.arrayBuffer());
-    mime = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+    const cached = prefetchedBufs?.get(src.trim());
+    if (cached) {
+      buf = cached.buf; mime = cached.mime;
+    } else {
+      const r = await fetch(src, { headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw Object.assign(new Error(`Failed to fetch reference image (HTTP ${r.status}) from ${src.slice(0, 120)}`), { status: 400 });
+      buf = Buffer.from(await r.arrayBuffer());
+      mime = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+    }
   }
 
   const hdrs = {
@@ -1025,7 +1053,7 @@ async function uploadReferenceTemporal(acc, src) {
 }
 
 // ── Image generation ──────────────────────────────────────────────────────────
-async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null, resolution = null, references = [] }) {
+async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1", mode = "auto", model = "auto", variations = false, folder = null, resolution = null, references = [], _prefetchedBufs = null }) {
   // model param takes precedence over mode param
   const resolvedMode = model !== "auto" ? model : mode;
   // folder param overrides the account's default folderRef
@@ -1049,7 +1077,7 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
       if (ref.creation_id || ref.identifier) {
         image = `creation:${ref.creation_id || ref.identifier}`;
       } else if (typeof ref.url === "string" && ref.url.trim()) {
-        image = await uploadReferenceTemporal(acc, ref.url.trim()); // → "temporal:{filename}"
+        image = await uploadReferenceTemporal(acc, ref.url.trim(), _prefetchedBufs); // → "temporal:{filename}"
       } else {
         continue;
       }
@@ -2581,9 +2609,15 @@ async function generateWithRotation(params) {
     }
   }
 
+  // Pre-download all URL-based reference images ONCE before rotation.
+  // Without this, every account the rotation tries re-downloads the same reference URL.
+  const _prefetchedBufs = params.references?.length > 0
+    ? await prefetchRefBuffers(params.references)
+    : null;
+
   return tryWithRotation(pool, 'image', async acc => {
     addLog("INFO", `Generating — account=${acc.name}`, { prompt: params.prompt?.slice(0, 80) });
-    const images = await generateImages(acc, params);
+    const images = await generateImages(acc, { ...params, _prefetchedBufs });
     // Deduct credits optimistically from local counter so next request routes correctly
     if (needsCredits && creditCost > 0 && acc.credits != null) {
       acc.credits = Math.max(0, acc.credits - creditCost);
