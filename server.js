@@ -16,6 +16,50 @@ const AUTO_DELETE = true; // always delete creations after generation — never 
 const RENDER_API_KEY    = process.env.RENDER_API_KEY    || '';
 const RENDER_SERVICE_ID = process.env.RENDER_SERVICE_ID || '';
 
+// ── Cloudflare relay + bandwidth guard ───────────────────────────────────────────
+// When RELAY_WORKER_URL is set, large media (reference images, video frames,
+// motion-control videos) are moved SOURCE→Magnific-GCS by a Cloudflare Worker
+// (free unmetered egress) instead of downloading+uploading through Render. Every
+// call falls back to the local path on any error, so generation never breaks.
+const RELAY_WORKER_URL = process.env.RELAY_WORKER_URL || '';
+const RELAY_SECRET     = process.env.RELAY_SECRET     || '';
+// Hard backstop: pause heavy media features once month-to-date outbound bandwidth
+// (read from Render's own metrics API) reaches this many MB. 0 = disabled.
+const BW_CAP_MB        = Number(process.env.BW_CAP_MB || 4500);
+
+let _bwState = { mb: 0, ok: false, checkedAt: 0 };
+async function refreshBandwidthUsage() {
+  if (!RENDER_API_KEY || !RENDER_SERVICE_ID || !BW_CAP_MB) return;
+  try {
+    const now   = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const end   = now.toISOString();
+    const r = await fetch(`https://api.render.com/v1/metrics/bandwidth?resource=${RENDER_SERVICE_ID}&startTime=${start}&endTime=${end}`,
+      { headers: { Authorization: `Bearer ${RENDER_API_KEY}`, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return;
+    const j = await r.json();
+    const totalMb = (j.values || []).reduce((s, v) => s + (Number(v.value) || 0), 0);
+    _bwState = { mb: totalMb, ok: true, checkedAt: Date.now() };
+  } catch { /* keep last known reading */ }
+}
+function bandwidthOverBudget() { return _bwState.ok && BW_CAP_MB > 0 && _bwState.mb >= BW_CAP_MB; }
+function bandwidthGuard(res) {
+  if (bandwidthOverBudget()) {
+    res.status(429).json({
+      error: "Monthly bandwidth budget reached — heavy media features (upscale, video, image references) are paused to keep the service within its free tier. They resume on the 1st. Plain text-to-image still works.",
+      code: "BANDWIDTH_BUDGET",
+      usage_mb: Math.round(_bwState.mb), cap_mb: BW_CAP_MB,
+    });
+    return false;
+  }
+  return true;
+}
+if (RENDER_API_KEY && RENDER_SERVICE_ID && BW_CAP_MB) {
+  refreshBandwidthUsage();
+  const _bwTimer = setInterval(refreshBandwidthUsage, 10 * 60 * 1000);
+  if (_bwTimer.unref) _bwTimer.unref();
+}
+
 // ── TOTP admin auth ────────────────────────────────────────────────────────────
 let TOTP_INSTANCE = null;
 let TOTP_SECRET_B32 = process.env.TOTP_SECRET || "";
@@ -1017,7 +1061,60 @@ async function prefetchRefBuffers(references) {
 // reject raw base64 — they want "creation:id", "temporal:filename", or
 // "character-generator-reference:id".) Accepts a base64 data URL or a public/remote URL.
 // Pass prefetchedBufs (from prefetchRefBuffers) to avoid re-downloading on every rotation attempt.
+// ── Cloudflare relay helpers ────────────────────────────────────────────────────
+// Ask the Worker to fetch `from` and stream it into the signed GCS `to` URL.
+// Throws on any failure so callers can fall back to the local download+upload path.
+async function relayGcsUpload({ from, to, contentType }) {
+  const r = await fetch(RELAY_WORKER_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-relay-key": RELAY_SECRET },
+    body: JSON.stringify({ from, to, contentType }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error(`relay upload failed (HTTP ${r.status}): ${j.error || "unknown"}`);
+  return j;
+}
+
+// Determine MIME without downloading the body (HEAD request ≈ 0 bytes; falls back to
+// guessing from the file extension). Needed because Magnific's temporal-upload-url
+// call requires mime_type up front, and in the relay path Render never sees the bytes.
+async function sniffMime(url) {
+  try {
+    const r = await fetch(url, { method: "HEAD", headers: { "user-agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000) });
+    const ct = (r.headers.get("content-type") || "").split(";")[0].trim();
+    if (ct && ct !== "application/octet-stream") return ct;
+  } catch { /* ignore — fall through to extension guess */ }
+  const ext = (url.split("?")[0].split("#")[0].split(".").pop() || "").toLowerCase();
+  const map = { jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", webp:"image/webp", gif:"image/gif",
+                mp4:"video/mp4", webm:"video/webm", mov:"video/quicktime", m4v:"video/mp4" };
+  return map[ext] || "image/jpeg";
+}
+
 async function uploadReferenceTemporal(acc, src, prefetchedBufs = null) {
+  // RELAY PATH: URL source + Worker enabled → Worker fetches & uploads (zero Render egress).
+  if (RELAY_WORKER_URL && !src.startsWith("data:")) {
+    try {
+      const url  = src.trim();
+      const mime = await sniffMime(url);
+      const hdrs0 = {
+        accept: "application/json", "content-type": "application/json",
+        cookie: acc.cookieString, origin: BASE, referer: `${BASE}/app/ai-image-generator`,
+        "x-xsrf-token": acc.xsrf,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+      };
+      const rr = await fetch(`${BASE}/app/api/temporal-upload-url?lang=en_US&user_id=${acc.userId}`,
+        { method: "POST", headers: hdrs0, body: JSON.stringify({ mime_type: mime }), signal: AbortSignal.timeout(15000) });
+      const jj = await rr.json().catch(() => ({}));
+      if (!rr.ok || !jj.upload_url || !jj.path) throw new Error(`temporal-upload-url failed (${rr.status})`);
+      await relayGcsUpload({ from: url, to: jj.upload_url, contentType: mime });
+      return "temporal:" + jj.path.split("/").pop();
+    } catch (e) {
+      addLog("WARN", `[${acc.name}] relay ref upload failed (${e.message}) — falling back to local`);
+      // fall through to local path below
+    }
+  }
+
   let buf, mime;
   if (src.startsWith("data:")) {
     const m = src.match(/^data:([^;]+);base64,(.+)$/);
@@ -1688,6 +1785,35 @@ async function generateAudioWithRotation(params) {
 //   3. POST /app/api/temporal-upload-url/verify → confirm exists
 //   Returns the read_url (pikaso.cdnpk.net CDN URL) for use in keyframes.
 async function uploadOneFrame(acc, imageSource) {
+  // RELAY PATH: URL source + Worker enabled → Worker streams bytes to GCS (zero Render egress).
+  if (RELAY_WORKER_URL && !imageSource.startsWith('data:')) {
+    try {
+      const url  = imageSource.trim();
+      const mime = await sniffMime(url);
+      const magnificHeaders0 = {
+        'accept': 'application/json', 'content-type': 'application/json',
+        'cookie': acc.cookieString, 'origin': BASE, 'referer': `${BASE}/app/ai-video-generator`,
+        'x-xsrf-token': acc.xsrf,
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+      };
+      const r1 = await fetch(`${BASE}/app/api/temporal-upload-url?lang=en_US&user_id=${acc.userId}`,
+        { method: 'POST', headers: magnificHeaders0, body: JSON.stringify({ mime_type: mime }), signal: AbortSignal.timeout(15000) });
+      const t1 = await r1.text(); const j1 = JSON.parse(t1);
+      if (!r1.ok || !j1.upload_url) throw new Error(`temporal-upload-url failed (${r1.status})`);
+      const { upload_url, read_url, path } = j1;
+      await relayGcsUpload({ from: url, to: upload_url, contentType: mime });
+      const r3 = await fetch(`${BASE}/app/api/temporal-upload-url/verify?lang=en_US&user_id=${acc.userId}`,
+        { method: 'POST', headers: magnificHeaders0, body: JSON.stringify({ path }), signal: AbortSignal.timeout(15000) });
+      const j3 = await r3.json().catch(() => ({}));
+      if (!j3.exists) throw new Error(`verify failed at ${path}`);
+      addLog('INFO', `[${acc.name}] Frame uploaded via relay → ${read_url.slice(0, 80)}…`);
+      return read_url;
+    } catch (e) {
+      addLog('WARN', `[${acc.name}] relay frame upload failed (${e.message}) — falling back to local`);
+      // fall through to local path below
+    }
+  }
+
   // Download image if URL, keep as buffer
   let imgBuffer, mimeType;
   if (imageSource.startsWith('data:')) {
@@ -2611,7 +2737,9 @@ async function generateWithRotation(params) {
 
   // Pre-download all URL-based reference images ONCE before rotation.
   // Without this, every account the rotation tries re-downloads the same reference URL.
-  const _prefetchedBufs = params.references?.length > 0
+  // Skipped when the Cloudflare relay is on — there the Worker fetches each URL, so
+  // downloading on Render would just waste the bandwidth we're trying to save.
+  const _prefetchedBufs = (!RELAY_WORKER_URL && params.references?.length > 0)
     ? await prefetchRefBuffers(params.references)
     : null;
 
@@ -2695,6 +2823,9 @@ app.post("/v1/images/generate", auth, async (req, res) => {
   const syncMode = req.query.wait === 'true';
 
   if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
+
+  // Reference images relay bytes — respect the monthly bandwidth budget.
+  if (references?.length && !bandwidthGuard(res)) return;
 
   const resolvedModel = model || mode || "auto";
   const modelInfo = IMAGE_MODELS.find(m => m.id === resolvedModel);
@@ -2801,6 +2932,7 @@ app.post("/v1/images/generations", auth, async (req, res) => {
 
 // ── POST /v1/videos/generate ─────────────────────────────────────────────────
 app.post("/v1/videos/generate", auth, async (req, res) => {
+  if (!bandwidthGuard(res)) return;
   const {
     prompt,
     model = "bytedance-seedance-fast-2.0",
@@ -3064,6 +3196,7 @@ app.post('/v1/upload', auth, async (req, res) => {
 });
 
 app.post('/v1/images/upscale', auth, async (req, res) => {
+  if (!bandwidthGuard(res)) return;
   const {
     image_url,
     creation_id   = null,
