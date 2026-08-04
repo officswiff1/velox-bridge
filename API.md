@@ -22,7 +22,7 @@ If `API_SECRET` is empty (not set on the server), all requests pass through with
 
 ## How the API Works — Async Job System
 
-All generation endpoints (`/v1/images/generate`, `/v1/videos/generate`, `/v1/audio/generate`) use an **async job system**. You submit a request and get back a `job_id` **instantly** (< 1 second). Then you poll `GET /v1/jobs/:id` until the job is `completed` or `failed`.
+All generation endpoints (`/v1/images/generate`, `/v1/videos/generate`, `/v1/audio/generate`, `/v1/3d/generate`) use an **async job system**. You submit a request and get back a `job_id` **instantly** (< 1 second). Then you poll `GET /v1/jobs/:id` until the job is `completed` or `failed`.
 
 ```
 Submit → job_id returned immediately (HTTP 202)
@@ -31,7 +31,7 @@ Completed → result contains the CDN URL
 ```
 
 **Why async?**
-- Video takes 1–5 minutes — holding an HTTP connection that long breaks mobile clients, Vercel, Cloudflare Workers, etc.
+- Video takes 1–5 minutes and 3D takes 1–3 minutes — holding an HTTP connection that long breaks mobile clients, Vercel, Cloudflare Workers, etc.
 - Multiple jobs can run in parallel without blocking your client
 - If network drops, the job keeps running — just re-poll with the same `job_id`
 
