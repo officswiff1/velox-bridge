@@ -335,6 +335,93 @@ const AUDIO_MODELS = [
 // Voice style → ElevenLabs stability value (Google ignores this)
 const VOICE_STYLE_STABILITY = { expressive: 0.2, neutral: 0.5, consistent: 0.8 };
 
+// ── 3D models (image-to-3D) ───────────────────────────────────────────────────
+// Config mirrors Magnific's own SPA (tools/image-to-3d). Every model is
+// credit-based — none are included in Premium+/Pro.
+//   multiView  : accepts up to 4 object views (front/left/back/right)
+//   textureQ   : texture_quality values accepted ([] = model has no texture input)
+//   faceLimitK : slider range in THOUSANDS of faces (as shown in the UI)
+//   rig        : supports "rig for animation" (single view only)
+const THREED_VIEWS = ['front', 'left', 'back', 'right'];
+
+const THREED_MODELS = [
+  {
+    id: 'tripo-v31', name: 'Tripo v3.1', provider: 'tripo',
+    modelVersion: 'v3.1-20260211',
+    multiView: true, rig: true,
+    textureQ: ['none', 'standard', 'detailed'], defaultTextureQ: 'detailed',
+    faceLimitK: { min: 100, max: 2000, step: 50, default: 1000 },
+    credits: { standard: 580, detailed: 1160 },
+    note: 'Gold standard for ultra-detailed models. Best for hero assets and polished final results.',
+  },
+  {
+    id: 'tripo-p1', name: 'Tripo P1', provider: 'tripo',
+    modelVersion: 'P1-20260311',
+    multiView: true, rig: true,
+    textureQ: ['none', 'standard'], defaultTextureQ: 'standard',
+    faceLimitK: { min: 0.1, max: 20, step: 0.1, default: 10 },
+    credits: { fast: 775 },
+    note: 'Smart Mesh for clean low-poly topology and lightweight real-time assets.',
+  },
+  {
+    id: 'trellis-2', name: 'Trellis 2', provider: 'trellis-2',
+    multiView: false, rig: false,
+    textureQ: [], defaultTextureQ: null,
+    faceLimitK: null,
+    resolutions: [512, 1024, 1536], defaultResolution: 1024,
+    credits: { 512: 610, 1024: 730, 1536: 850 },
+    note: 'General-purpose single-image model for detailed textured 3D assets.',
+  },
+  {
+    id: 'meshy', name: 'Meshy 6', provider: 'meshy',
+    multiView: true, rig: false,
+    textureQ: [], defaultTextureQ: null,
+    faceLimitK: { min: 1, max: 300, step: 1, default: 30 },
+    credits: { flat: 1160 },
+    note: 'Balanced quality/speed single- or multi-view 3D generation.',
+  },
+];
+
+// Trellis-2 sampler defaults — copied verbatim from the Magnific SPA. Sent inside
+// `config` alongside the chosen resolution.
+const TRELLIS_CONFIG_DEFAULTS = {
+  ss_guidance_strength: 7.5, ss_guidance_rescale: 0.7, ss_sampling_steps: 12, ss_rescale_t: 5,
+  shape_slat_guidance_strength: 7.5, shape_slat_guidance_rescale: 0.5, shape_slat_sampling_steps: 12, shape_slat_rescale_t: 3,
+  tex_slat_guidance_strength: 1, tex_slat_guidance_rescale: 0, tex_slat_sampling_steps: 12, tex_slat_rescale_t: 3,
+  decimation_target: 500000, texture_size: 2048, remesh: true, remesh_band: 1, remesh_project: 0,
+};
+
+function threeDModel(id) { return THREED_MODELS.find(m => m.id === id) || null; }
+
+// Maps a requested texture_quality onto what the provider actually accepts.
+// Tripo P1 only has none/standard, so "detailed" collapses to "standard".
+function threeDTextureQuality(tm, requested) {
+  if (!tm.textureQ.length) return null;
+  const q = requested || tm.defaultTextureQ;
+  return tm.textureQ.includes(q) ? q : tm.defaultTextureQ;
+}
+
+// Credit cost — depends on model + texture quality (tripo) or resolution (trellis).
+function threeDCredits(tm, { textureQuality = null, resolution = null } = {}) {
+  if (tm.id === 'tripo-p1')  return tm.credits.fast;
+  if (tm.id === 'tripo-v31') return threeDTextureQuality(tm, textureQuality) === 'detailed' ? tm.credits.detailed : tm.credits.standard;
+  if (tm.id === 'trellis-2') return tm.credits[resolution || tm.defaultResolution] ?? tm.credits[tm.defaultResolution];
+  return tm.credits.flat;
+}
+
+// Accepts face_limit in thousands (what the UI slider shows, e.g. 1000 = 1M faces).
+// Values above the model's max are treated as an absolute face count instead, so
+// both `1000` and `1000000` mean the same thing for tripo-v31.
+function threeDFaceLimit(tm, raw) {
+  if (!tm.faceLimitK) return null;
+  const { min, max, default: def } = tm.faceLimitK;
+  let k = Number(raw);
+  if (!Number.isFinite(k) || k <= 0) k = def;
+  if (k > max) k = k / 1000;                       // caller passed an absolute count
+  k = Math.min(Math.max(k, min), max);
+  return Math.round(k * 1000);
+}
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 const logs = [];
 function addLog(level, msg, meta = {}) {
@@ -2311,6 +2398,253 @@ async function removeBackgroundWithRotation(imageSource) {
   });
 }
 
+// ── 3D generation (image-to-3D) ───────────────────────────────────────────────
+// Flow (mirrors Magnific's own SPA):
+//   1. persistCreation() — upload each source view as a real creation (multipart)
+//   2. POST /app/api/image-to-3d/generate with the creation identifiers
+//   3. poll /app/api/creations until the model is ready
+// Only the resulting CDN URLs are returned — the .glb itself (often 20-40 MB) is
+// never proxied through this server, so 3D costs almost no outbound bandwidth.
+
+// Uploads one image and returns its persisted creation identifier.
+async function persistCreation(acc, imageSource, tool = 'upload-reference') {
+  let buf, contentType;
+
+  if (imageSource.startsWith('data:')) {
+    const m = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(imageSource);
+    if (!m) throw Object.assign(new Error('Invalid data URL'), { status: 400 });
+    contentType = m[1] || 'image/png';
+    buf = Buffer.from(m[2], 'base64');
+  } else {
+    const imgRes = await fetch(imageSource, {
+      headers: { 'user-agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!imgRes.ok) throw Object.assign(new Error(`Failed to download image (HTTP ${imgRes.status})`), { status: 400 });
+    buf = Buffer.from(await imgRes.arrayBuffer());
+    contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+  }
+
+  const ext = (contentType.split('/')[1] || 'png').split(';')[0].replace('jpeg', 'jpg');
+  const fd = new FormData();
+  fd.append('file', new File([buf], `creation.${ext}`, { type: contentType }));
+  fd.append('family', crypto.randomUUID());   // Magnific requires a UUID here
+  fd.append('tool', tool);
+  fd.append('visible', '0');                  // keep it out of the user's feed
+
+  const r = await fetch(`${BASE}/app/api/creations`, {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'cookie': acc.cookieString,
+      'origin': BASE,
+      'referer': `${BASE}/app/tools/image-to-3d`,
+      'x-xsrf-token': acc.xsrf,
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      ...(acc.folderRef ? { 'x-folder-reference': acc.folderRef } : {}),
+    },
+    body: fd,
+    signal: AbortSignal.timeout(90000),
+  });
+
+  const text = await r.text();
+  let json; try { json = JSON.parse(text); } catch {}
+
+  if (r.status === 401 || r.status === 403) {
+    throw Object.assign(new Error(`Auth failed during upload (${r.status})`), { status: r.status });
+  }
+  const creation = json?.data || json?.creation || json;
+  if ((r.status === 200 || r.status === 201) && creation?.identifier) {
+    return { identifier: creation.identifier, id: creation.id };
+  }
+  throw Object.assign(
+    new Error(`Source image upload failed (${r.status}): ${json?.message || json?.error || text.slice(0, 200)}`),
+    { status: r.status === 422 ? 400 : 500 }
+  );
+}
+
+async function generate3D(acc, params) {
+  const { model, views, textureQuality, faceLimit, resolution, rig } = params;
+  const tm = threeDModel(model);
+
+  await refreshSession(acc, 'tools/image-to-3d');
+
+  // Upload every supplied view, keeping front/left/back/right order.
+  const viewKeys = THREED_VIEWS.filter(v => views[v]);
+  const sourceIds = [];
+  const cleanupIds = [];
+  for (const key of viewKeys) {
+    const c = await persistCreation(acc, views[key]);
+    sourceIds.push(c.identifier);
+    if (Number.isInteger(c.id)) cleanupIds.push(c.id);
+  }
+  addLog('INFO', `[${acc.name}] 3D sources uploaded — ${sourceIds.length} view(s): ${viewKeys.join(', ')}`);
+
+  const singleImage = sourceIds.length <= 1;
+  const body = {
+    provider: tm.provider,
+    source_creation_ids: sourceIds,
+    // image_views is only meaningful for multi-view-capable models
+    ...(tm.multiView ? { image_views: viewKeys } : {}),
+    ...(tm.id === 'trellis-2'
+      ? { config: { resolution, ...TRELLIS_CONFIG_DEFAULTS } }
+      : tm.id === 'meshy'
+        ? { face_limit: faceLimit }
+        : {
+            model_version: tm.modelVersion,
+            ...(textureQuality ? { texture_quality: textureQuality } : {}),
+            face_limit: faceLimit,
+            // "rig for animation" is tripo-only and single-view-only
+            ...(rig && singleImage ? { rig: true } : {}),
+          }),
+  };
+
+  const r = await fetch(`${BASE}/app/api/image-to-3d/generate`, {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'content-type': 'application/json',
+      'cookie': acc.cookieString,
+      'origin': BASE,
+      'referer': `${BASE}/app/tools/image-to-3d`,
+      'x-xsrf-token': acc.xsrf,
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      ...(acc.folderRef ? { 'x-folder-reference': acc.folderRef } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60000),
+  });
+
+  const text = await r.text();
+  let json; try { json = JSON.parse(text); } catch {}
+
+  if (r.status === 401 || r.status === 403) {
+    deleteCreations(acc, cleanupIds);
+    throw Object.assign(new Error(`Auth failed (${r.status})`), { status: r.status });
+  }
+  if (!json?.data?.identifier) {
+    deleteCreations(acc, cleanupIds);
+    const msg = json?.message || json?.error || text.slice(0, 200);
+    addLog('WARN', `[${acc.name}] 3D start failed (${r.status}): ${text.slice(0, 400)}`);
+    // Magnific reports "not enough credits" as 402/422 depending on the provider
+    const insufficient = /credit/i.test(String(msg)) || r.status === 402;
+    throw Object.assign(
+      new Error(insufficient
+        ? `Not enough credits for 3D model "${model}" (needs ${params.credits}) — ${msg}`
+        : `3D generation start failed (${r.status}): ${msg}`),
+      { status: insufficient ? 429 : (r.status >= 400 ? r.status : 500) }
+    );
+  }
+
+  const started = json.data;
+  const identifier = started.identifier;
+  cleanupIds.push(...(Number.isInteger(started.id) ? [started.id] : []));
+  addLog('INFO', `[${acc.name}] 3D queued — identifier=${identifier} model=${model} provider=${tm.provider} expect=${started.metadata?.expectTime ?? '?'}s`);
+
+  // Poll until the mesh is ready (10 min ceiling — observed ~2 min for tripo-v31).
+  const deadline = Date.now() + 600000;
+  while (Date.now() < deadline) {
+    await sleep(8000);
+
+    let poll;
+    try {
+      poll = await apiRequest('GET', '/app/api/creations', null, acc);
+    } catch (e) {
+      addLog('WARN', `[${acc.name}] 3D poll error: ${e.message}`);
+      continue;
+    }
+    if (poll.status !== 200 || !Array.isArray(poll.json?.data)) continue;
+
+    const item = poll.json.data.find(i => i.identifier === identifier);
+    if (!item) continue;
+
+    if (item.status === 'completed') {
+      const md = item.metadata || {};
+      if (!md.model_glb_url) continue;              // URL not attached yet — keep polling
+      deleteCreations(acc, cleanupIds);             // fire-and-forget; CDN links stay valid
+      return {
+        model_url:     md.model_glb_url,
+        lowpoly_url:   md.model_lowpoly_url || null,
+        thumbnail_url: item.url || item.preview || null,
+        source_urls:   md.object_reference_urls || [],
+        format:        md.model_format || 'glb',
+        file_name:     md.model_file_name || 'model.glb',
+        file_size:     md.model_file_size ?? null,
+        stats:         md.modelStats || null,
+        rigged:        md.modelStats?.hasSkeleton ?? false,
+        model, provider: tm.provider,
+        texture_quality: textureQuality,
+        face_limit: faceLimit,
+        resolution: tm.id === 'trellis-2' ? resolution : null,
+        views: viewKeys,
+        credits_used: md.creditLedgerTotals?.credits ?? params.credits,
+        elapsed_ms: md.elapsedTime ?? null,
+        identifier,
+        id: String(item.id),
+      };
+    }
+
+    if (item.status === 'failed') {
+      const md = item.metadata || {};
+      // Rigging failures carry their reason under metadata.rigging (the request is
+      // routed to Magnific's "person-to-3d" pipeline when rig=true).
+      const rigErr = md.rigging?.errorMessage;
+      const detail = rigErr || md.error || md.message || md.reason || md.errorMessage
+        || item.error || item.message || 'unknown error';
+      addLog('WARN', `[${acc.name}] 3D failed — identifier=${identifier}: ${JSON.stringify(md).slice(0, 400)}`);
+      deleteCreations(acc, cleanupIds);
+      const hint = (rigErr && md.rigging?.riggable === false)
+        ? ' — rigging only works on character/humanoid subjects; retry with rig=false for a static mesh.'
+        : '';
+      throw new Error(`3D generation failed for model "${model}": ${detail}${hint}`);
+    }
+  }
+
+  deleteCreations(acc, cleanupIds);
+  throw new Error(`3D generation timed out after 10 minutes (model "${model}")`);
+}
+
+async function generate3DWithRotation(params) {
+  let pool = manager.getPool(a => a.status === 'active');
+  if (!pool.length) {
+    throw Object.assign(new Error('No active accounts available for 3D generation.'), { status: 503 });
+  }
+
+  // Every 3D model is credit-based — route to accounts that can actually pay.
+  const cost = params.credits;
+  const now = Date.now();
+  const unchallenged = pool.filter(a => !(a.challengedUntil > now));
+  if (unchallenged.length > 0 && unchallenged.length < pool.length) pool = unchallenged;
+
+  const checked = pool.filter(a => a.planCheckedAt != null && a.credits != null);
+  const creditPool = pool.filter(a => a.planCheckedAt == null || (a.credits != null && a.credits >= cost));
+  if (creditPool.length === 0 && checked.length > 0) {
+    const maxAvailable = Math.max(...checked.map(a => a.credits ?? 0));
+    throw Object.assign(
+      new Error(`Insufficient credits for 3D model "${params.model}" — requires ${cost} credits, highest available: ${maxAvailable}. Top up an account or pick a cheaper model (GET /v1/models?type=3d).`),
+      { status: 402 }
+    );
+  }
+  if (creditPool.length > 0) {
+    pool = creditPool;
+    addLog('INFO', `3D model "${params.model}" (${cost}cr) — routing to ${pool.map(a => a.name).join(', ')}`);
+  } else {
+    addLog('WARN', `3D model "${params.model}" (${cost}cr) — no account has enough credits, trying all`);
+  }
+
+  return tryWithRotation(pool, '3d', async acc => {
+    addLog('INFO', `3D generating — account=${acc.name} model=${params.model}`);
+    const result = await generate3D(acc, params);
+    return { result, account: acc.name };
+  });
+}
+
 // ── tryWithRotation — semaphore-aware account rotation ───────────────────────
 // Algorithm:
 //   1. First pass: try every account that has a free slot RIGHT NOW (no waiting).
@@ -3269,9 +3603,171 @@ app.post('/v1/images/upscale', auth, async (req, res) => {
   }
 });
 
+// ── POST /v1/3d/generate ──────────────────────────────────────────────────────
+// Image → 3D model (.glb). Async by default (returns job_id); pass ?wait=true to
+// block until the mesh is ready. Only CDN URLs are returned — the mesh itself is
+// never proxied through this server.
+app.post('/v1/3d/generate', auth, async (req, res) => {
+  if (!bandwidthGuard(res)) return;
+  const {
+    model = 'tripo-v31',
+    image_url = null,
+    image_data = null,
+    views = null,
+    texture_quality = null,
+    face_limit = null,
+    resolution = null,
+    rig = false,
+  } = req.body || {};
+
+  const tm = threeDModel(model);
+  if (!tm) {
+    return res.status(400).json({ error: `Unknown 3D model "${model}". Call GET /v1/models?type=3d to see available models.` });
+  }
+
+  // Assemble the view map. A bare image_url/image_data is the front view.
+  const viewMap = {};
+  if (views && typeof views === 'object') {
+    for (const [k, v] of Object.entries(views)) {
+      if (!THREED_VIEWS.includes(k)) {
+        return res.status(400).json({ error: `Invalid view "${k}". Must be one of: ${THREED_VIEWS.join(', ')}` });
+      }
+      if (typeof v !== 'string' || !v.trim()) {
+        return res.status(400).json({ error: `View "${k}" must be a non-empty URL or base64 data URL.` });
+      }
+      viewMap[k] = v.trim();
+    }
+  }
+  const single = (typeof image_url === 'string' && image_url.trim()) || (typeof image_data === 'string' && image_data.trim());
+  if (single && !viewMap.front) viewMap.front = single.trim();
+
+  const viewKeys = THREED_VIEWS.filter(v => viewMap[v]);
+  if (viewKeys.length === 0) {
+    return res.status(400).json({ error: 'An image is required — provide image_url, image_data, or views.front.' });
+  }
+  if (!viewMap.front) {
+    return res.status(400).json({ error: 'views.front is required — the front view anchors the model.' });
+  }
+  if (!tm.multiView && viewKeys.length > 1) {
+    return res.status(400).json({ error: `Model "${model}" is single-image only — it accepts views.front but not ${viewKeys.filter(v => v !== 'front').join(', ')}.` });
+  }
+
+  // Per-model parameter resolution
+  const textureQuality = threeDTextureQuality(tm, texture_quality);
+  if (texture_quality && !tm.textureQ.length) {
+    return res.status(400).json({ error: `Model "${model}" has no texture_quality option.` });
+  }
+  if (texture_quality && tm.textureQ.length && !tm.textureQ.includes(texture_quality)) {
+    return res.status(400).json({ error: `Invalid texture_quality "${texture_quality}" for "${model}". Must be one of: ${tm.textureQ.join(', ')}` });
+  }
+
+  let chosenResolution = null;
+  if (tm.resolutions) {
+    chosenResolution = resolution == null ? tm.defaultResolution : Number(resolution);
+    if (!tm.resolutions.includes(chosenResolution)) {
+      return res.status(400).json({ error: `Invalid resolution "${resolution}" for "${model}". Must be one of: ${tm.resolutions.join(', ')}` });
+    }
+  } else if (resolution != null) {
+    return res.status(400).json({ error: `Model "${model}" has no resolution option (that is Trellis 2 only).` });
+  }
+
+  const wantRig = Boolean(rig);
+  if (wantRig && !tm.rig) {
+    return res.status(400).json({ error: `Model "${model}" does not support rig. Rigging is available on tripo-v31 and tripo-p1.` });
+  }
+  if (wantRig && viewKeys.length > 1) {
+    return res.status(400).json({ error: 'rig is only available for single-view generation (views.front alone).' });
+  }
+
+  const genParams = {
+    model,
+    views: viewMap,
+    textureQuality,
+    faceLimit: threeDFaceLimit(tm, face_limit),
+    resolution: chosenResolution,
+    rig: wantRig,
+    credits: threeDCredits(tm, { textureQuality, resolution: chosenResolution }),
+  };
+
+  const shape = r => ({
+    model_url:       r.model_url,
+    lowpoly_url:     r.lowpoly_url,
+    thumbnail_url:   r.thumbnail_url,
+    format:          r.format,
+    file_name:       r.file_name,
+    file_size:       r.file_size,
+    stats:           r.stats,
+    rigged:          r.rigged,
+    model:           r.model,
+    provider:        r.provider,
+    texture_quality: r.texture_quality,
+    face_limit:      r.face_limit,
+    resolution:      r.resolution,
+    views:           r.views,
+    credits_used:    r.credits_used,
+    elapsed_ms:      r.elapsed_ms,
+    identifier:      r.identifier,
+    id:              r.id,
+  });
+
+  if (req.query.wait === 'true') {
+    try {
+      const t0 = Date.now();
+      const { result, account } = await generate3DWithRotation(genParams);
+      return res.json({
+        created: Math.floor(Date.now() / 1000),
+        processing_time_ms: Date.now() - t0,
+        data: shape(result),
+        account,
+      });
+    } catch (e) {
+      addLog('ERROR', `3D generation failed: ${e.message}`);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
+  }
+
+  // Async — 3D takes ~2-5 min, so this is the default.
+  const job = createJob('3d', { model });
+  res.status(202).json({ job_id: job.id, status: 'queued', retry_after: 15, poll_url: `/v1/jobs/${job.id}` });
+
+  const t0 = Date.now();
+  job.status = 'processing'; job.updated_at = Date.now();
+  generate3DWithRotation(genParams)
+    .then(({ result, account }) => finishJob(job, shape(result), account, t0))
+    .catch(e => { addLog('ERROR', `[job ${job.id}] 3D failed: ${e.message}`); failJob(job, e, t0); });
+});
+
 // ── GET /v1/models ────────────────────────────────────────────────────────────
 app.get("/v1/models", (req, res) => {
   const { type = "all" } = req.query;
+
+  if (type === "3d") {
+    return res.json({
+      object: "list",
+      data: THREED_MODELS.map(m => ({
+        id: m.id,
+        name: m.name,
+        type: "3d",
+        provider: m.provider,
+        unlimited: false,
+        credits: m.id === 'tripo-v31' ? { standard: m.credits.standard, detailed: m.credits.detailed }
+               : m.id === 'trellis-2' ? { 512: m.credits[512], 1024: m.credits[1024], 1536: m.credits[1536] }
+               : m.id === 'tripo-p1'  ? m.credits.fast
+               : m.credits.flat,
+        features: {
+          multi_view:      m.multiView,
+          max_views:       m.multiView ? THREED_VIEWS.length : 1,
+          views:           m.multiView ? THREED_VIEWS : ['front'],
+          rig:             m.rig,
+          texture_quality: m.textureQ,
+          face_limit_k:    m.faceLimitK,
+          resolutions:     m.resolutions || null,
+        },
+        note: m.note,
+      })),
+      total: THREED_MODELS.length,
+    });
+  }
 
   if (type === "audio") {
     return res.json({
@@ -4718,6 +5214,7 @@ app.get("/docs", (req, res) => {
     <a href="#images">Images</a>
     <a href="#videos">Videos</a>
     <a href="#audio">Audio</a>
+    <a href="#threed">3D</a>
     <a href="#voices">Voices</a>
     <a href="#models">Models</a>
     <a href="#health">Health</a>
@@ -4820,6 +5317,32 @@ app.get("/docs", (req, res) => {
   -d '{"text":"Hello world, this is a test.","model":"eleven_v3","voice":"Rachel","style":"neutral"}'</pre>
   </div>
 
+  <!-- 3D -->
+  <h2 id="threed">3D</h2>
+
+  <div class="endpoint">
+    <span class="method POST">POST</span><span class="url">/v1/3d/generate</span>
+    <p>Turn an image into a downloadable 3D model (<code>.glb</code>). Async by default — returns a <code>job_id</code>; add <code>?wait=true</code> to block. Typical time 60–180 s.
+    <strong>All 3D models cost credits</strong> (580–1160) — none are unlimited. Returns HTTP 402 if no account has enough.</p>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+      <tr><td>model</td><td>string</td><td><span class="opt">optional</span> <code>tripo-v31</code> (default) | <code>tripo-p1</code> | <code>trellis-2</code> | <code>meshy</code></td></tr>
+      <tr><td>image_url</td><td>string</td><td><span class="req">required*</span> Source image URL — used as the front view</td></tr>
+      <tr><td>image_data</td><td>string</td><td><span class="opt">optional</span> Base64 data URL instead of <code>image_url</code></td></tr>
+      <tr><td>views</td><td>object</td><td><span class="opt">optional</span> Multi-view <code>{front,left,back,right}</code>. <code>front</code> required. Not for <code>trellis-2</code>.</td></tr>
+      <tr><td>texture_quality</td><td>string</td><td><span class="opt">optional</span> Tripo only — <code>none</code> | <code>standard</code> | <code>detailed</code></td></tr>
+      <tr><td>face_limit</td><td>number</td><td><span class="opt">optional</span> Mesh density in thousands (1000 = 1M faces)</td></tr>
+      <tr><td>resolution</td><td>number</td><td><span class="opt">optional</span> Trellis 2 only — <code>512</code> | <code>1024</code> | <code>1536</code></td></tr>
+      <tr><td>rig</td><td>boolean</td><td><span class="opt">optional</span> Tripo + single view only. Needs a character/humanoid subject.</td></tr>
+    </table>
+    <p>* Provide <code>image_url</code>, <code>image_data</code>, or <code>views.front</code>. Result gives <code>model_url</code> (full <code>.glb</code>), <code>lowpoly_url</code>, <code>thumbnail_url</code> and mesh <code>stats</code>. Links are signed and expire in ~24 h.</p>
+    <h3>Example</h3>
+    <pre><button class="copy-btn" onclick="copyPre(this)">Copy</button>curl -X POST https://YOUR_DOMAIN/v1/3d/generate \\
+  -H "X-API-Key: YOUR_SECRET" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"trellis-2","image_url":"https://example.com/chair.png","resolution":512}'</pre>
+  </div>
+
   <!-- Voices -->
   <h2 id="voices">Voices</h2>
 
@@ -4850,9 +5373,10 @@ curl "https://YOUR_DOMAIN/v1/audio/voices?provider=elevenlabs" -H "X-API-Key: YO
     <p>List available models. Returns image models by default.</p>
     <table>
       <tr><th>Query param</th><th>Description</th></tr>
-      <tr><td>type</td><td><code>all</code> (default) | <code>video</code> | <code>audio</code> | <code>unlimited</code> | <code>credits</code></td></tr>
+      <tr><td>type</td><td><code>all</code> (default) | <code>video</code> | <code>audio</code> | <code>3d</code> | <code>unlimited</code> | <code>credits</code></td></tr>
     </table>
     <pre><button class="copy-btn" onclick="copyPre(this)">Copy</button>curl "https://YOUR_DOMAIN/v1/models?type=video" -H "X-API-Key: YOUR_SECRET"
+curl "https://YOUR_DOMAIN/v1/models?type=3d"
 curl "https://YOUR_DOMAIN/v1/models?type=unlimited"</pre>
   </div>
 

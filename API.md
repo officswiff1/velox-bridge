@@ -1,6 +1,6 @@
 # Magnific API — Developer Reference
 
-**Base URL:** `https://freepik-api-qg08.onrender.com`
+**Base URL:** `https://velox-bridge.onrender.com`
 
 This is a private proxy that turns Magnific/Freepik browser sessions into a clean REST API for AI image, video, audio, and utility generation. All generation endpoints require an API key. Responses follow a consistent JSON shape.
 
@@ -43,23 +43,23 @@ Completed → result contains the CDN URL
 
 ```bash
 # Step 1 — Submit a video job (returns instantly)
-curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
+curl -X POST https://velox-bridge.onrender.com/v1/videos/generate \
   -H "X-API-Key: YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "a wave crashing on a rocky shore", "model": "kling-25"}'
 # → {"job_id":"job_abc123","status":"queued","retry_after":10,"poll_url":"/v1/jobs/job_abc123"}
 
 # Step 2 — Poll for result (repeat every retry_after seconds)
-curl https://freepik-api-qg08.onrender.com/v1/jobs/job_abc123 \
+curl https://velox-bridge.onrender.com/v1/jobs/job_abc123 \
   -H "X-API-Key: YOUR_KEY"
 # → {"status":"completed","result":{"url":"https://pikaso.cdnpk.net/...",...}}
 
 # Images and audio work the same way
-curl -X POST https://freepik-api-qg08.onrender.com/v1/images/generate \
+curl -X POST https://velox-bridge.onrender.com/v1/images/generate \
   -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"prompt": "a futuristic city at night", "model": "flux-2"}'
 
-curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
+curl -X POST https://velox-bridge.onrender.com/v1/audio/generate \
   -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "model": "eleven_v3"}'
 ```
@@ -73,6 +73,7 @@ curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
 | `POST` | `/v1/images/generate` | API key | Submit image job → `job_id` (async) |
 | `POST` | `/v1/videos/generate` | API key | Submit video job → `job_id` (async) |
 | `POST` | `/v1/audio/generate` | API key | Submit audio job → `job_id` (async) |
+| `POST` | `/v1/3d/generate` | API key | Submit image→3D job → `job_id` (async) |
 | `GET` | `/v1/jobs/:id` | API key | Poll job status and get result |
 | `GET` | `/v1/jobs` | API key | List last 100 jobs |
 | `POST` | `/v1/images/generations` | API key | OpenAI-compatible image generation (sync) |
@@ -434,7 +435,7 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 Tested against the live deployment — full request and the **actual** response it returned:
 
 ```bash
-curl -X POST "https://freepik-api-qg08.onrender.com/v1/images/upscale" \
+curl -X POST "https://velox-bridge.onrender.com/v1/images/upscale" \
   -H "Content-Type: application/json" \
   -d '{
     "image_url": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=900&q=80",
@@ -753,6 +754,154 @@ Preview CDN files are **publicly accessible** — no auth, no expiry. Safe to em
 
 ---
 
+## POST /v1/3d/generate
+
+Turns an image into a downloadable 3D model (`.glb`). Returns a `job_id` **immediately** (HTTP 202) — poll `GET /v1/jobs/:id` for the result. Add `?wait=true` to block until the mesh is ready.
+
+**Typical job time:** 60–90 s (Trellis 2) · 120–180 s (Tripo, Meshy). Multi-view takes longer.
+
+> **All 3D models cost credits** — none are included in Premium+/Pro. Costs range from 580 to 1160 credits per generation. Check `GET /v1/models?type=3d` for exact pricing, and `GET /v1/accounts/plans` for available balance. If no account has enough credits the API returns **HTTP 402** with the highest balance found.
+
+### Models
+
+| Model | Provider | Credits | Multi-view | Rig | Texture quality | Face limit (K) | Resolutions |
+|---|---|---|---|---|---|---|---|
+| `tripo-v31` | Tripo | 580 (standard) / 1160 (detailed) | ✅ up to 4 | ✅ | `none` `standard` `detailed` | 100–2000 (def 1000) | — |
+| `tripo-p1` | Tripo | 775 | ✅ up to 4 | ✅ | `none` `standard` | 0.1–20 (def 10) | — |
+| `trellis-2` | Microsoft | 610 / 730 / 850 (by resolution) | ❌ single image | ❌ | — | — | `512` `1024` `1536` |
+| `meshy` | Meshy 6 | 1160 | ✅ up to 4 | ❌ | — | 1–300 (def 30) | — |
+
+- **`tripo-v31`** — gold standard for ultra-detailed models. Best for hero assets and polished final results.
+- **`tripo-p1`** — Smart Mesh for clean low-poly topology and lightweight real-time assets.
+- **`trellis-2`** — general-purpose single-image model for detailed textured assets. Cheapest option.
+- **`meshy`** — balanced quality/speed, single- or multi-view.
+
+### Request
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model` | string | `tripo-v31` | One of the model IDs above |
+| `image_url` | string | — | Public URL of the source image (used as the **front** view) |
+| `image_data` | string | — | Base64 data URL (`data:image/png;base64,…`) instead of `image_url` |
+| `views` | object | — | Multi-view input: `{ front, left, back, right }`, each a URL or data URL. `front` is **required**. Only for models with `multi_view: true`. |
+| `texture_quality` | string | model default | `none` \| `standard` \| `detailed` (Tripo only). `detailed` doubles the cost on `tripo-v31`. |
+| `face_limit` | number | model default | Mesh density **in thousands** (matches the UI slider — `1000` = 1,000,000 faces). Values above the model's max are treated as an absolute face count, so `1000` and `1000000` mean the same thing on `tripo-v31`. |
+| `resolution` | number | `1024` | **Trellis 2 only** — `512` \| `1024` \| `1536`. Higher costs more. |
+| `rig` | boolean | `false` | **Tripo only, single view only.** Generates an animation-ready rigged skeleton. Requires a **character/humanoid** subject — non-character images fail the pre-rig check. |
+
+Provide either `image_url`/`image_data` (single front view) **or** `views` for multi-view. Extra views meaningfully improve accuracy on the back and sides.
+
+```bash
+# Single image → 3D
+curl -X POST https://velox-bridge.onrender.com/v1/3d/generate \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "trellis-2",
+    "image_url": "https://example.com/chair.png",
+    "resolution": 512
+  }'
+
+# Multi-view → 3D (more accurate)
+curl -X POST https://velox-bridge.onrender.com/v1/3d/generate \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tripo-v31",
+    "views": {
+      "front": "https://example.com/front.png",
+      "left":  "https://example.com/left.png",
+      "back":  "https://example.com/back.png"
+    },
+    "texture_quality": "standard",
+    "face_limit": 500
+  }'
+```
+
+### Response (async — HTTP 202)
+
+```json
+{
+  "job_id": "job_1a2c71b645b0033ca120",
+  "status": "queued",
+  "retry_after": 15,
+  "poll_url": "/v1/jobs/job_1a2c71b645b0033ca120"
+}
+```
+
+Then poll `GET /v1/jobs/:id` until `status` is `completed`:
+
+```json
+{
+  "status": "completed",
+  "result": {
+    "model_url": "https://pikaso.cdnpk.net/.../model.glb?token=...",
+    "lowpoly_url": "https://pikaso.cdnpk.net/.../model-lowpoly.glb?token=...",
+    "thumbnail_url": "https://pikaso.cdnpk.net/.../model-thumbnail.png?token=...",
+    "format": "glb",
+    "file_name": "model.glb",
+    "file_size": 3376304,
+    "stats": {
+      "format": "glb",
+      "meshes": 1,
+      "vertices": 53716,
+      "materials": 1,
+      "triangles": 99474,
+      "boundingBox": { "depth": 0.764, "width": 0.7638, "height": 1.0034 },
+      "hasSkeleton": false,
+      "hasAnimations": false
+    },
+    "rigged": false,
+    "model": "trellis-2",
+    "provider": "trellis-2",
+    "texture_quality": null,
+    "face_limit": null,
+    "resolution": 512,
+    "views": ["front"],
+    "credits_used": 610,
+    "elapsed_ms": 71037,
+    "identifier": "tCvOnRZmZJ",
+    "id": "3398748811"
+  },
+  "account": "…",
+  "processing_time_ms": 80296
+}
+```
+
+| Field | Description |
+|---|---|
+| `model_url` | Full-quality `.glb` — the main deliverable |
+| `lowpoly_url` | Decimated `.glb`, much smaller. Good for web/real-time preview |
+| `thumbnail_url` | Rendered PNG preview of the mesh |
+| `stats` | Mesh statistics — triangle/vertex counts, bounding box, skeleton/animation flags |
+| `rigged` | `true` when a skeleton was generated (`rig: true` on a character) |
+| `credits_used` | Actual credits consumed, from Magnific's ledger |
+
+> **Download links expire.** The `.glb` URLs are signed CDN links valid for roughly 24 hours. Download and store the file if you need it long-term — the API never proxies the mesh bytes itself.
+
+### ✅ Verified end-to-end examples (live)
+
+Three real generations run against this server:
+
+| Test | Model | Params | Result |
+|---|---|---|---|
+| Single image | `trellis-2` | `resolution: 512` | ✅ 71 s · 610 cr · 3.38 MB · 99,474 tris |
+| Multi-view | `tripo-v31` | `views: {front,left}`, `texture_quality: standard`, `face_limit: 500` | ✅ 140 s · 580 cr · 14.2 MB · 493,692 tris |
+| Rig | `tripo-v31` | `rig: true` on a non-character image | ⚠️ Correctly rejected: *"Model is not riggable"* |
+
+All returned URLs were verified to download real assets (`glTF` magic bytes on the `.glb` files, valid PNG thumbnails).
+
+### Errors
+
+| Status | Meaning |
+|---|---|
+| `400` | Invalid model, view name, texture quality, or resolution for the chosen model |
+| `402` | No account has enough credits — response names the highest balance available |
+| `429` | Monthly bandwidth budget reached (`code: BANDWIDTH_BUDGET`) |
+| `500` | Generation failed — message includes Magnific's reason (e.g. *"Model is not riggable"*) |
+
+---
+
 ## GET /v1/models
 
 Lists all available models. No authentication required.
@@ -761,7 +910,7 @@ Lists all available models. No authentication required.
 
 | Param | Values | Description |
 |---|---|---|
-| `type` | `unlimited` `credits` `video` `audio` | Filter by model type (omit for all image models) |
+| `type` | `unlimited` `credits` `video` `audio` `3d` | Filter by model type (omit for all image models) |
 
 ```
 GET /v1/models                  → all image models (43 total)
@@ -769,6 +918,7 @@ GET /v1/models?type=unlimited   → unlimited image models (34)
 GET /v1/models?type=credits     → credit-based image models (9)
 GET /v1/models?type=video       → video models (42)
 GET /v1/models?type=audio       → audio/TTS models (6)
+GET /v1/models?type=3d          → 3D models (4)
 ```
 
 ### Response (image)
@@ -884,6 +1034,37 @@ Each video model includes full capability metadata — resolutions, duration opt
     "credits": 5
   }
 ]
+```
+
+### Response (3d)
+
+`credits` is an object when cost varies by texture quality (`tripo-v31`) or resolution (`trellis-2`), and a plain number otherwise:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "tripo-v31",
+      "name": "Tripo v3.1",
+      "type": "3d",
+      "provider": "tripo",
+      "unlimited": false,
+      "credits": { "standard": 580, "detailed": 1160 },
+      "features": {
+        "multi_view": true,
+        "max_views": 4,
+        "views": ["front", "left", "back", "right"],
+        "rig": true,
+        "texture_quality": ["none", "standard", "detailed"],
+        "face_limit_k": { "min": 100, "max": 2000, "step": 50, "default": 1000 },
+        "resolutions": null
+      },
+      "note": "Gold standard for ultra-detailed models. Best for hero assets and polished final results."
+    }
+  ],
+  "total": 4
+}
 ```
 
 ---
@@ -1405,7 +1586,7 @@ Check live capacity at `GET /health`.
 ### JavaScript / Node.js (async — recommended)
 
 ```js
-const BASE = 'https://freepik-api-qg08.onrender.com';
+const BASE = 'https://velox-bridge.onrender.com';
 const KEY = 'your_api_key';
 const HEADERS = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 
@@ -1458,7 +1639,7 @@ async function generateAudio(text, voice = 'A-Xee') {
 ```python
 import requests, time
 
-BASE = "https://freepik-api-qg08.onrender.com"
+BASE = "https://velox-bridge.onrender.com"
 HEADERS = {"X-API-Key": "your_api_key", "Content-Type": "application/json"}
 
 def poll_job(job_id, interval=5, timeout=600):
@@ -1496,7 +1677,7 @@ print(result["url"])
 ### cURL (async workflow)
 
 ```bash
-BASE="https://freepik-api-qg08.onrender.com"
+BASE="https://velox-bridge.onrender.com"
 KEY="YOUR_KEY"
 
 # 1. Submit video job
