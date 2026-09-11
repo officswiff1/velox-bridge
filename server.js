@@ -121,7 +121,7 @@ function isValidAdminSession(token) {
 
 function verifyTOTP(code) {
   if (!TOTP_INSTANCE) return false;
-  const delta = TOTP_INSTANCE.validate({ token: String(code).replace(/\s/g, ""), window: 1 });
+  const delta = TOTP_INSTANCE.validate({ token: String(code).replace(/\s/g, ""), window: 10 });
   return delta !== null;
 }
 
