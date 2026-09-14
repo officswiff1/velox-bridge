@@ -3030,6 +3030,25 @@ setTimeout(() => checkAllAccountPlans(true), 2000);
 // Re-check every hour
 setInterval(() => checkAllAccountPlans(false), PLAN_CHECK_INTERVAL_MS);
 
+// ── Session keep-alive ─────────────────────────────────────────────────────────
+// magnific_session TTL is ~47 min. Refresh every 20 min so it never expires from
+// inactivity — prevents accounts going sessionDead when idle between generations.
+async function sessionKeepAlive() {
+  const accounts = manager.accounts.filter(a => a.status === 'active');
+  for (let i = 0; i < accounts.length; i++) {
+    const acc = accounts[i];
+    // Skip debounce: force by temporarily clearing the lastRefresh entry
+    if (acc.lastRefresh) delete acc.lastRefresh['ai-image-generator'];
+    try {
+      await refreshSession(acc, 'ai-image-generator');
+    } catch (e) {
+      addLog('WARN', `[${acc.name}] Keep-alive refresh failed: ${e.message}`);
+    }
+    if (i < accounts.length - 1) await sleep(2000); // 2s between accounts
+  }
+}
+setInterval(sessionKeepAlive, 20 * 60 * 1000); // every 20 minutes
+
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 
