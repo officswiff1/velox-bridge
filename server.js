@@ -1052,7 +1052,18 @@ async function refreshSession(acc, page = 'ai-image-generator') {
     } else {
       addLog("WARN", `[${acc.name}] Session refresh got no new cookies (page=${page} status=${r.status}) — session may be dead`);
     }
-    return { alive: r.status === 200, refreshed, finalStatus: r.status };
+
+    // 403 from Cloudflare WAF = the datacenter IP/TLS fingerprint is blocked, NOT the session.
+    // Treat as "alive=true" (assume session is still valid) so we don't kill accounts
+    // just because the server can't load the SPA page from a datacenter IP.
+    // Real session expiry shows as a redirect to /login (followed → 200 on login page, no Set-Cookie for magnific_session).
+    // 401 = actual auth rejection → session is dead.
+    const wafBlocked = r.status === 403;
+    const alive = r.status === 200 || wafBlocked;
+    if (wafBlocked) {
+      addLog("WARN", `[${acc.name}] Session refresh blocked by Cloudflare WAF (403) — assuming session still alive`);
+    }
+    return { alive, refreshed, finalStatus: r.status };
   } catch (e) {
     addLog("WARN", `[${acc.name}] Session refresh failed: ${e.message}`);
     return { alive: false, refreshed: false, finalStatus: 0 };
