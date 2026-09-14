@@ -3000,6 +3000,11 @@ async function checkAccountPlan(acc) {
     if (acc.planStatus === 'free') {
       acc.status = 'inactive';
       addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan, no generation access`);
+    } else if (acc.status === 'inactive' && (acc.planStatus === 'premium' || acc.planStatus === 'expired')) {
+      // Session was dead before (expired cookies) but fresh cookies passed the check — re-activate
+      acc.status = 'active';
+      acc.sessionDead = false;
+      addLog('INFO', `[${acc.name}] Re-activated — fresh session confirmed, plan=${acc.planStatus}`);
     }
 
     // Video flag is no longer auto-managed by credit balance.
