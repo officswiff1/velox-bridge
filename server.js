@@ -2846,10 +2846,12 @@ function pythonCandidates() {
   if (process.platform === 'win32') {
     list.push('python', 'python3');
   } else {
-    // venv python (where build installs curl_cffi), then version-specific, then generic
+    // Render's guaranteed runtime python (3.11), then venv/version-specific, then generic.
+    // py_modules holds curl_cffi built for 3.11, so /usr/bin/python3.11 is the reliable one.
     list.push(
+      '/usr/bin/python3.11',
       '/opt/render/project/src/.venv/bin/python3',
-      'python3.14', 'python3.13', 'python3.12', 'python3.11',
+      'python3.11', 'python3.12', 'python3.13', 'python3.14',
       'python3'
     );
   }
