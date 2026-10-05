@@ -5381,4 +5381,11 @@ curl "https://YOUR_DOMAIN/v1/models?type=unlimited"</pre>
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   addLog("INFO", `Freepik API server listening on port ${PORT}`);
+  // Diagnose Python at runtime to find correct binary for curl_cffi
+  const { execFile: ef } = require('child_process');
+  const diag = `import sys, subprocess, os; v=sys.version; p=sys.executable; print(f"PYDIAG bin={p} ver={v.split()[0]}"); r=subprocess.run([p,'-m','pip','show','curl_cffi'],capture_output=True,text=True); print("PYDIAG curl_cffi=" + ("FOUND" if r.returncode==0 else "MISSING"))`;
+  ef('python3', ['-c', diag], { timeout: 10000 }, (err, out, se) => {
+    if (err) addLog('WARN', `[startup] python3 diag failed: ${err.message}`);
+    else addLog('INFO', `[startup] ${out.trim()}`);
+  });
 });
