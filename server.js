@@ -2845,12 +2845,15 @@ function runPlanCheck(cookieString) {
     const pyBin = process.platform === 'win32' ? 'python' : 'python3';
     execFile(pyBin, [scriptPath, cookieString], { timeout: 60000 }, (err, stdout, stderr) => {
       if (err) {
+        addLog('WARN', `[planCheck] sidecar exec failed (${pyBin}): ${err.message}${stderr ? ' | stderr: ' + stderr.slice(0, 300) : ''}`);
         resolve(null);
         return;
       }
+      if (stderr) addLog('WARN', `[planCheck] sidecar stderr: ${stderr.slice(0, 300)}`);
       try {
         resolve(JSON.parse(stdout.trim()));
       } catch {
+        addLog('WARN', `[planCheck] sidecar output not JSON: ${stdout.slice(0, 200)}`);
         resolve(null);
       }
     });
