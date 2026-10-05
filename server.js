@@ -75,7 +75,7 @@ function setupTOTP() {
         digits: 6,
         period: 30,
       });
-      console.log(`[TOTP] Admin 2FA ready. Secret loaded from env (len=${TOTP_SECRET_B32.length}, ...${TOTP_SECRET_B32.slice(-4)}).`);
+      console.log("[TOTP] Admin 2FA ready. Secret loaded from TOTP_SECRET env var.");
     } catch (e) {
       console.error("[TOTP] Invalid TOTP_SECRET:", e.message);
     }
@@ -3831,7 +3831,6 @@ app.get("/health", (req, res) => {
   const activeAccounts = accounts.filter(a => a.status === 'active');
   res.json({
     status: "ok",
-    buildMarker: "MARKER-20261005-A1",
     accounts,
     total: accounts.length,
     active: activeAccounts.length,
@@ -5409,14 +5408,4 @@ curl "https://YOUR_DOMAIN/v1/models?type=unlimited"</pre>
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   addLog("INFO", `Freepik API server listening on port ${PORT}`);
-  // Diagnose Python at runtime: use the SAME binary + PYTHONPATH that runPlanCheck uses
-  const { execFile: ef } = require('child_process');
-  const pyBin = process.env.PYTHON_BIN || 'python3';
-  const pyModules = path.join(__dirname, 'py_modules');
-  const pyEnv = { ...process.env, PYTHONPATH: pyModules + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : '') };
-  const diag = `import sys; print(f"PYDIAG bin={sys.executable} ver={sys.version.split()[0]}")\ntry:\n import curl_cffi; print("PYDIAG curl_cffi=IMPORTABLE")\nexcept Exception as e: print(f"PYDIAG curl_cffi=FAIL {e}")`;
-  ef(pyBin, ['-c', diag], { timeout: 10000, env: pyEnv }, (err, out, se) => {
-    if (err) addLog('WARN', `[startup] python diag failed (${pyBin}): ${err.message}${se ? ' | ' + se.slice(0,200) : ''}`);
-    else addLog('INFO', `[startup] ${out.trim()}`);
-  });
 });
