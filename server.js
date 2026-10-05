@@ -2841,8 +2841,9 @@ const PLAN_CHECK_INTERVAL_MS = 3600000; // re-check every 1 hour
 function runPlanCheck(cookieString) {
   return new Promise((resolve) => {
     const scriptPath = path.join(__dirname, 'magnific_check.py');
-    // Try python3 first (Linux/Render), fall back to python (Windows)
-    const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+    // Use PYTHON_BIN env var if set (set at build time to match pip's python),
+    // else try python3 (Linux/Render), fall back to python (Windows)
+    const pyBin = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
     execFile(pyBin, [scriptPath, cookieString], { timeout: 60000 }, (err, stdout, stderr) => {
       if (err) {
         addLog('WARN', `[planCheck] sidecar exec failed (${pyBin}): ${err.message}${stderr ? ' | stderr: ' + stderr.slice(0, 300) : ''}`);
