@@ -2858,9 +2858,9 @@ function pythonCandidates() {
   return [...new Set(list)]; // dedupe, preserve order
 }
 
-function runPlanCheckWith(pyBin, scriptPath, cookieString, pyEnv) {
+function runSidecarWith(pyBin, scriptPath, cookieString, pyEnv, timeout) {
   return new Promise((resolve) => {
-    execFile(pyBin, [scriptPath, cookieString], { timeout: 60000, env: pyEnv }, (err, stdout, stderr) => {
+    execFile(pyBin, [scriptPath, cookieString], { timeout, env: pyEnv, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) { resolve({ ok: false, pyBin, err: err.message, stderr: (stderr || '').slice(0, 200) }); return; }
       try { resolve({ ok: true, pyBin, data: JSON.parse(stdout.trim()) }); }
       catch { resolve({ ok: false, pyBin, err: 'output not JSON', stderr: (stdout || '').slice(0, 200) }); }
@@ -2868,26 +2868,34 @@ function runPlanCheckWith(pyBin, scriptPath, cookieString, pyEnv) {
   });
 }
 
-async function runPlanCheck(cookieString) {
-  const scriptPath = path.join(__dirname, 'magnific_check.py');
+// Run a python sidecar script against the candidate python binaries, returning parsed JSON or null.
+async function runSidecar(scriptName, cookieString, { timeout = 60000, tag = 'sidecar' } = {}) {
+  const scriptPath = path.join(__dirname, scriptName);
   const pyModules = path.join(__dirname, 'py_modules');
   const pyEnv = { ...process.env, PYTHONPATH: pyModules + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : '') };
-  const candidates = pythonCandidates();
   const failures = [];
-  for (const pyBin of candidates) {
-    const r = await runPlanCheckWith(pyBin, scriptPath, cookieString, pyEnv);
+  for (const pyBin of pythonCandidates()) {
+    const r = await runSidecarWith(pyBin, scriptPath, cookieString, pyEnv, timeout);
     if (r.ok) {
-      if (failures.length) addLog('INFO', `[planCheck] used ${pyBin} after ${failures.length} miss(es)`);
+      if (failures.length) addLog('INFO', `[${tag}] used ${pyBin} after ${failures.length} miss(es)`);
       return r.data;
     }
     failures.push(`${pyBin}: ${r.err}${r.stderr ? ' | ' + r.stderr : ''}`);
-    // If it's not a "binary missing" error, the python ran but failed — stop retrying others
+    // If python ran but failed for a non-missing-module reason, stop retrying others
     if (r.err && !/ENOENT|not found|command not found/i.test(r.err) && !/No module named 'curl_cffi'/.test(r.stderr || '')) {
       break;
     }
   }
-  addLog('WARN', `[planCheck] all python candidates failed: ${failures.join(' || ').slice(0, 500)}`);
+  addLog('WARN', `[${tag}] all python candidates failed: ${failures.join(' || ').slice(0, 500)}`);
   return null;
+}
+
+function runPlanCheck(cookieString) {
+  return runSidecar('magnific_check.py', cookieString, { timeout: 60000, tag: 'planCheck' });
+}
+
+function runDiscover(cookieString) {
+  return runSidecar('magnific_discover.py', cookieString, { timeout: 60000, tag: 'discover' });
 }
 
 async function checkAccountPlan(acc) {
@@ -3880,6 +3888,76 @@ app.post('/v1/accounts/plans/refresh', (req, res, next) => {
 }, async (req, res) => {
   checkAllAccountPlans(true).catch(() => {});
   res.json({ ok: true, message: 'Plan refresh started for all active accounts' });
+});
+
+// ── GET /v1/models/discover ───────────────────────────────────────────────────
+// Pulls LIVE /app/api/tti-modes + /app/api/video/ai-models via the sidecar (using a
+// premium account's cookies) and diffs against our IMAGE_MODELS / VIDEO_MODELS tables,
+// so we can spot newly-added models or models whose unlimited status changed.
+app.get('/v1/models/discover', (req, res, next) => {
+  if (isValidAdminSession(req.cookies?.admin_session)) return next();
+  auth(req, res, next);
+}, async (req, res) => {
+  const acc = manager.accounts.find(a => a.status === 'active' && a.planStatus === 'premium')
+            || manager.accounts.find(a => a.status === 'active')
+            || manager.accounts[0];
+  if (!acc) return res.json({ ok: false, error: 'No account available to query models' });
+
+  try { await refreshSession(acc, 'ai-image-generator'); } catch {}
+  const data = await runDiscover(acc.cookieString);
+  if (!data) return res.json({ ok: false, error: 'discover sidecar failed (see logs)' });
+  if (data.error && !data.images && !data.videos) return res.json({ ok: false, error: data.error });
+
+  // tti-modes: entries carry an id/mode and an unlimited indicator. Field names vary,
+  // so detect unlimited defensively across the shapes Magnific has used.
+  const isUnlimited = (m) => {
+    const flag = m.unlimited ?? m.isUnlimited ?? m.unlimitedParams ?? null;
+    if (flag != null) return !!flag;
+    const badge = JSON.stringify(m.badge ?? m.badges ?? m.badgeTooltips ?? '').toLowerCase();
+    if (badge.includes('unlimited') || badge.includes('all year')) return true;
+    if ((m.credits === 0 || m.cost === 0) && (m.credits != null || m.cost != null)) return true;
+    return false;
+  };
+  const idOf = (m) => m.id || m.mode || m.modelId || m.value || m.key || null;
+
+  const normalize = (rawList) => {
+    const arr = Array.isArray(rawList) ? rawList
+      : (rawList && Array.isArray(rawList.modes)) ? rawList.modes
+      : (rawList && Array.isArray(rawList.models)) ? rawList.models
+      : (rawList && Array.isArray(rawList.data)) ? rawList.data
+      : [];
+    return arr.map(m => ({ id: idOf(m), name: m.name || m.label || m.title || idOf(m), unlimited: isUnlimited(m) }))
+              .filter(m => m.id);
+  };
+
+  const liveImages = normalize(data.images);
+  const liveVideos = normalize(data.videos);
+
+  const knownImg = new Map(IMAGE_MODELS.map(m => [m.id, !!m.unlimited]));
+  const knownVid = new Map(VIDEO_MODELS.map(m => [m.id, !!m.unlimited]));
+
+  const diff = (live, known) => {
+    const added = [], changed = [];
+    for (const m of live) {
+      if (!known.has(m.id)) { added.push(m); continue; }
+      const wasUnlimited = known.get(m.id);
+      if (wasUnlimited !== m.unlimited) changed.push({ ...m, wasUnlimited, nowUnlimited: m.unlimited });
+    }
+    const liveIds = new Set(live.map(m => m.id));
+    const removed = [...known.keys()].filter(id => !liveIds.has(id));
+    return { added, changed, removed };
+  };
+
+  res.json({
+    ok: true,
+    account: acc.name,
+    imagesStatus: data.imagesStatus,
+    videosStatus: data.videosStatus,
+    images: { live: liveImages.length, known: knownImg.size, ...diff(liveImages, knownImg) },
+    videos: { live: liveVideos.length, known: knownVid.size, ...diff(liveVideos, knownVid) },
+    hint: 'added = new model IDs to add to the table; changed = unlimited flag flipped; removed = in our table but no longer live (verify before deleting). Raw dumps at /v1/models/discover?raw=1',
+    ...(req.query.raw ? { rawImages: data.images, rawVideos: data.videos } : {}),
+  });
 });
 
 // ── GET /logs ─────────────────────────────────────────────────────────────────
