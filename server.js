@@ -2838,29 +2838,54 @@ const PLAN_CHECK_INTERVAL_MS = 3600000; // re-check every 1 hour
 
 // Run magnific_check.py via curl_cffi (Chrome TLS impersonation) to bypass Cloudflare WAF.
 // Returns parsed JSON result or null on failure.
-function runPlanCheck(cookieString) {
+// Candidate python binaries, tried in order. Does NOT rely solely on PYTHON_BIN —
+// different Render containers may or may not have it set, so we probe several.
+function pythonCandidates() {
+  const list = [];
+  if (process.env.PYTHON_BIN) list.push(process.env.PYTHON_BIN);
+  if (process.platform === 'win32') {
+    list.push('python', 'python3');
+  } else {
+    // venv python (where build installs curl_cffi), then version-specific, then generic
+    list.push(
+      '/opt/render/project/src/.venv/bin/python3',
+      'python3.14', 'python3.13', 'python3.12', 'python3.11',
+      'python3'
+    );
+  }
+  return [...new Set(list)]; // dedupe, preserve order
+}
+
+function runPlanCheckWith(pyBin, scriptPath, cookieString, pyEnv) {
   return new Promise((resolve) => {
-    const scriptPath = path.join(__dirname, 'magnific_check.py');
-    // Use PYTHON_BIN env var if set (set at build time to match pip's python),
-    // else try python3 (Linux/Render), fall back to python (Windows)
-    const pyBin = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
-    const pyModules = path.join(__dirname, 'py_modules');
-    const pyEnv = { ...process.env, PYTHONPATH: pyModules + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : '') };
     execFile(pyBin, [scriptPath, cookieString], { timeout: 60000, env: pyEnv }, (err, stdout, stderr) => {
-      if (err) {
-        addLog('WARN', `[planCheck] sidecar exec failed (${pyBin}): ${err.message}${stderr ? ' | stderr: ' + stderr.slice(0, 300) : ''}`);
-        resolve(null);
-        return;
-      }
-      if (stderr) addLog('WARN', `[planCheck] sidecar stderr: ${stderr.slice(0, 300)}`);
-      try {
-        resolve(JSON.parse(stdout.trim()));
-      } catch {
-        addLog('WARN', `[planCheck] sidecar output not JSON: ${stdout.slice(0, 200)}`);
-        resolve(null);
-      }
+      if (err) { resolve({ ok: false, pyBin, err: err.message, stderr: (stderr || '').slice(0, 200) }); return; }
+      try { resolve({ ok: true, pyBin, data: JSON.parse(stdout.trim()) }); }
+      catch { resolve({ ok: false, pyBin, err: 'output not JSON', stderr: (stdout || '').slice(0, 200) }); }
     });
   });
+}
+
+async function runPlanCheck(cookieString) {
+  const scriptPath = path.join(__dirname, 'magnific_check.py');
+  const pyModules = path.join(__dirname, 'py_modules');
+  const pyEnv = { ...process.env, PYTHONPATH: pyModules + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : '') };
+  const candidates = pythonCandidates();
+  const failures = [];
+  for (const pyBin of candidates) {
+    const r = await runPlanCheckWith(pyBin, scriptPath, cookieString, pyEnv);
+    if (r.ok) {
+      if (failures.length) addLog('INFO', `[planCheck] used ${pyBin} after ${failures.length} miss(es)`);
+      return r.data;
+    }
+    failures.push(`${pyBin}: ${r.err}${r.stderr ? ' | ' + r.stderr : ''}`);
+    // If it's not a "binary missing" error, the python ran but failed — stop retrying others
+    if (r.err && !/ENOENT|not found|command not found/i.test(r.err) && !/No module named 'curl_cffi'/.test(r.stderr || '')) {
+      break;
+    }
+  }
+  addLog('WARN', `[planCheck] all python candidates failed: ${failures.join(' || ').slice(0, 500)}`);
+  return null;
 }
 
 async function checkAccountPlan(acc) {
