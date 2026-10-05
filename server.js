@@ -3804,6 +3804,7 @@ app.get("/health", (req, res) => {
   const activeAccounts = accounts.filter(a => a.status === 'active');
   res.json({
     status: "ok",
+    buildMarker: "MARKER-20261005-A1",
     accounts,
     total: accounts.length,
     active: activeAccounts.length,
