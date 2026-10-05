@@ -3,6 +3,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
 const OTPAuth = require("otpauth");
 const QRCode = require("qrcode");
 const cookieParser = require("cookie-parser");
@@ -2835,194 +2836,94 @@ async function generateVideoWithRotation(params) {
 // Results stored directly on acc: plan, credits, planStatus, isPremium, etc.
 const PLAN_CHECK_INTERVAL_MS = 3600000; // re-check every 1 hour
 
+// Run magnific_check.py via curl_cffi (Chrome TLS impersonation) to bypass Cloudflare WAF.
+// Returns parsed JSON result or null on failure.
+function runPlanCheck(cookieString) {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, 'magnific_check.py');
+    // Try python3 first (Linux/Render), fall back to python (Windows)
+    const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+    execFile(pyBin, [scriptPath, cookieString], { timeout: 60000 }, (err, stdout, stderr) => {
+      if (err) {
+        resolve(null);
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()));
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
 async function checkAccountPlan(acc) {
-  // Refresh session first so GR_TOKEN is fresh — plan API rejects expired tokens
+  // Refresh session first so cookies are fresh before plan check
   let sessionAlive = true;
   try {
     const rs = await refreshSession(acc, 'ai-image-generator');
     if (rs) sessionAlive = rs.alive;
   } catch {}
 
-  // If session page returned non-200 (redirect to login), session is truly dead
   if (!sessionAlive) {
     acc.status = 'inactive';
     acc.planStatus = 'expired';
     acc.planCheckedAt = Date.now();
     acc.sessionDead = true;
-    addLog('WARN', `[${acc.name}] Auto-deactivated — session dead (page load returned non-200, cookies likely expired)`);
+    addLog('WARN', `[${acc.name}] Auto-deactivated — session dead (cookies likely expired)`);
     return;
   }
-  acc.sessionDead = false; // session is alive — clear any previous dead flag
+  acc.sessionDead = false;
 
-  const planHeaders = {
-    'accept': '*/*',
-    'cookie': acc.cookieString,
-    'referer': `${BASE}/user/my-subscriptions`,
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0',
-    'accept-language': 'en-US,en;q=0.5',
-    'dnt': '1',
-  };
+  // Use curl_cffi Python sidecar to bypass Cloudflare WAF on plan/credit APIs
+  const result = await runPlanCheck(acc.cookieString);
 
-  try {
-    const r1 = await fetch(`${BASE}/user/api/my-subscriptions`, {
-      headers: planHeaders,
-      signal: AbortSignal.timeout(15000),
-    });
+  if (!result) {
+    addLog('WARN', `[${acc.name}] Plan check: sidecar failed to run (Python/curl_cffi not available?)`);
+    return;
+  }
 
-    if (r1.status === 401 || r1.status === 403) {
-      const body = await r1.text();
-      // Cloudflare WAF blocks from datacenter IPs return HTML — don't deactivate, just skip
-      if (body.trim().startsWith('<') || body.includes('cloudflare') || body.includes('Just a moment')) {
-        addLog('WARN', `[${acc.name}] Plan check blocked by WAF (HTTP ${r1.status}) — keeping account active`);
-        acc.planCheckedAt = Date.now();
-        return;
-      }
-      // Plan API 401/403 with a live session = subscription expired/inaccessible
-      // but magnific_session is still valid for generation (unlimited models work).
-      // Keep active; if generation later fails with 401, tryWithRotation deactivates.
-      acc.planStatus = 'expired';
-      acc.plan = acc.plan || 'Expired';
-      acc.planCheckedAt = Date.now();
-      addLog('WARN', `[${acc.name}] Plan check returned ${r1.status} — subscription inaccessible but session alive, keeping active`);
-      return;
-    }
+  if (result.error) {
+    addLog('WARN', `[${acc.name}] Plan check sidecar error: ${result.error}`);
+  }
 
-    if (r1.status === 204) {
-      Object.assign(acc, { planStatus: 'free', plan: 'Free', isPremium: false,
-        credits: 0, creditsTotal: 0, creditsUsed: 0, planCheckedAt: Date.now() });
-      acc.status = 'inactive';
-      addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan (no subscription, HTTP 204)`);
-      return;
-    }
+  // Update email if missing
+  if (result.email && !acc.email) acc.email = result.email;
 
-    if (r1.status !== 200) {
-      addLog('WARN', `[${acc.name}] Plan check: unexpected HTTP ${r1.status}`);
-      return;
-    }
+  const plan = result.plan || 'expired';
+  acc.planCheckedAt = Date.now();
 
-    let data;
-    try { data = await r1.json(); } catch { addLog('WARN', `[${acc.name}] Plan check: invalid JSON`); return; }
+  if (plan === 'free') {
+    Object.assign(acc, { planStatus: 'free', plan: 'Free', isPremium: false,
+      credits: 0, creditsTotal: 0, creditsUsed: 0 });
+    acc.status = 'inactive';
+    addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan, no generation access`);
+    return;
+  }
 
-    if (!data.billing) {
-      acc.planStatus = 'expired';
-      acc.plan = acc.plan || 'Expired';
-      acc.planCheckedAt = Date.now();
-      addLog('WARN', `[${acc.name}] Plan check: no billing data — marking expired but keeping active`);
-      return;
-    }
+  if (plan === 'premium') {
+    acc.planStatus  = 'premium';
+    acc.isPremium   = true;
+    acc.plan        = result.productName || result.planName || 'Premium';
+    acc.planExpiry  = result.expiresAt ? result.expiresAt.split('T')[0] : '';
+    acc.credits     = result.credits     ?? acc.credits     ?? 0;
+    acc.creditsTotal = result.totalCredits ?? acc.creditsTotal ?? 0;
+    acc.creditsUsed  = result.creditsSpend  ?? acc.creditsUsed  ?? 0;
+    if (result.walletId) acc.walletId = result.walletId;
+  } else {
+    // expired or unknown
+    acc.planStatus = 'expired';
+    acc.isPremium  = false;
+    acc.plan       = result.planName || acc.plan || 'Expired';
+  }
 
-    // Email (update if missing from cookie file)
-    if (data.billing.customerBillingEmail && !acc.email) {
-      acc.email = data.billing.customerBillingEmail;
-    }
+  addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
 
-    const isFree = data.permissions?.isFree === true; // only free if explicitly true — undefined/absent means unknown, not free
-    const purchases = data.purchases || [];
-
-    if (!purchases.length) {
-      // Business / Teams accounts may have no purchases array but still have a valid paid plan.
-      // Don't deactivate — keep active, mark plan as unknown so we don't block generation.
-      if (!isFree) {
-        Object.assign(acc, { planStatus: 'premium', plan: data.billing?.customerBillingEmail ? 'Business' : 'Unknown',
-          isPremium: true, planCheckedAt: Date.now() });
-        addLog('WARN', `[${acc.name}] No purchases array — likely Business/Teams plan; keeping active`);
-        return;
-      }
-      Object.assign(acc, { planStatus: 'free', plan: 'Free', isPremium: false,
-        credits: 0, creditsTotal: 0, planCheckedAt: Date.now() });
-      acc.status = 'inactive';
-      addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan (no purchases)`);
-      return;
-    }
-
-    const purchase = purchases[0];
-    const purchaseStatus = (purchase.purchaseStatus || '').toLowerCase();
-    const product = purchase.purchaseProduct || {};
-    acc.plan          = product.productName || (isFree ? 'Free' : 'Unknown');
-    acc.planFrequency = product.productPrices?.priceFrequency || '';
-    acc.planExpiry    = (purchase.purchaseNextBillingDate || '').split(' ')[0];
-    acc.purchaseStatus = purchaseStatus;
-
-    const ACTIVE = new Set(['active', 'trialing', 'past_due', 'non_renewed']);
-    acc.isPremium  = !isFree && ACTIVE.has(purchaseStatus);
-    acc.planStatus = acc.isPremium ? 'premium' : (isFree ? 'free' : 'expired');
-
-    // Step 2: wallet (credits)
-    const purchaseId = purchase.purchaseExternalId;
-    if (purchaseId) {
-      try {
-        const r2 = await fetch(`${BASE}/user/api/my-subscriptions/wallet-info/${purchaseId}`, {
-          headers: planHeaders,
-          signal: AbortSignal.timeout(15000),
-        });
-        if (r2.status === 200) {
-          const w = await r2.json();
-          acc.isTeam  = w.profile?.isTeams || false;
-          acc.isTrial = w.profile?.isTrial || false;
-          const planCreds  = w.creditsAvailable || 0;
-          const addonCreds = w.creditsAddonsAvailable || 0;
-          acc.credits      = w.totalCreditsAvailable != null ? w.totalCreditsAvailable : planCreds + addonCreds;
-          acc.creditsTotal = w.totalCreditsOfPlan || 0;
-          acc.creditsUsed  = w.creditsSpend || 0;
-          acc.creditsAddons = addonCreds;
-          acc.autoRefill   = w.autoRefill || false;
-        }
-      } catch (e) {
-        addLog('WARN', `[${acc.name}] Wallet check failed: ${e.message}`);
-      }
-    }
-
-    // Step 3: per-user available balance (separate endpoint — covers Business/Teams correctly)
-    // This is what the Magnific website shows in the account dropdown "Available: X"
-    try {
-      const r3 = await fetch(`${BASE}/user/api/credits`, {
-        headers: planHeaders,
-        signal: AbortSignal.timeout(10000),
-      });
-      if (r3.status === 200) {
-        const c = await r3.json();
-        // API returns { available, spent, total } or { credits: { available, spent, total } }
-        const avail = c.available ?? c.credits?.available ?? c.balance ?? c.creditsAvailable ?? null;
-        const spent = c.spent     ?? c.credits?.spent     ?? c.creditsSpend ?? null;
-        const total = c.total     ?? c.credits?.total     ?? c.creditsTotal ?? null;
-        if (avail != null) {
-          acc.credits      = avail;
-          if (spent != null) acc.creditsUsed  = spent;
-          if (total != null) acc.creditsTotal = total;
-          addLog('INFO', `[${acc.name}] Per-user credits: available=${avail} spent=${spent ?? '?'} total=${total ?? '?'}`);
-        } else {
-          // Unknown shape — log raw so we can adapt
-          addLog('WARN', `[${acc.name}] /user/api/credits unknown shape: ${JSON.stringify(c).slice(0, 200)}`);
-        }
-      } else {
-        addLog('WARN', `[${acc.name}] /user/api/credits HTTP ${r3.status} — falling back to wallet credits`);
-      }
-    } catch (e) {
-      addLog('WARN', `[${acc.name}] Per-user credits check failed: ${e.message} — using wallet credits`);
-    }
-
-    acc.planCheckedAt = Date.now();
-    addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan}${acc.isTeam ? ' (Team)' : ''} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
-
-    // Auto-deactivate free accounts — they can't generate anything useful
-    if (acc.planStatus === 'free') {
-      acc.status = 'inactive';
-      addLog('WARN', `[${acc.name}] Auto-deactivated — Free plan, no generation access`);
-    } else if (acc.status === 'inactive' && (acc.planStatus === 'premium' || acc.planStatus === 'expired')) {
-      // Session was dead before (expired cookies) but fresh cookies passed the check — re-activate
-      acc.status = 'active';
-      acc.sessionDead = false;
-      addLog('INFO', `[${acc.name}] Re-activated — fresh session confirmed, plan=${acc.planStatus}`);
-    }
-
-    // Video flag is no longer auto-managed by credit balance.
-    // All active accounts join the video pool; credit routing in generateVideoWithRotation
-    // handles skipping zero-credit accounts per-model at request time.
-  } catch (e) {
-    addLog('WARN', `[${acc.name}] Plan check error: ${e.message}`);
+  // Re-activate if this account was previously marked inactive with stale/dead cookies
+  if (acc.status === 'inactive' && (acc.planStatus === 'premium' || acc.planStatus === 'expired')) {
+    acc.status = 'active';
+    acc.sessionDead = false;
+    addLog('INFO', `[${acc.name}] Re-activated — fresh session confirmed, plan=${acc.planStatus}`);
   }
 }
 
