@@ -155,10 +155,9 @@ const IMAGE_MODELS = [
   { id: "flux-kontext-high",    name: "Flux.1 Kontext Max",           unlimited: true,  refs: true,  maxImages: 2  },
   // flux-sref removed — confirmed invalid (422) via live probe 2026-06-08
 
-  // Flux.2 family (flux-2-flex confirmed unlimited via tti-modes badgeTooltips)
+  // Flux.2 family — flux-2-flex is now CREDIT-based on Premium+ (moved below); only unlimited in Pro tier
   { id: "flux-2",               name: "Flux.2 Pro",                   unlimited: true,  refs: true,  maxImages: 2,  resolutions: ['1k','2k'] },
   { id: "flux-2-klein",         name: "Flux.2 Klein",                 unlimited: true,  refs: true,  maxImages: 2,  resolutions: ['1k','2k'] },
-  { id: "flux-2-flex",          name: "Flux.2 Flex",                  unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'] },
 
   // Classic
   { id: "fast",                 name: "Classic Fast",                  unlimited: true,  refs: false, maxImages: 12 },
@@ -171,18 +170,20 @@ const IMAGE_MODELS = [
   { id: "mystic-2-5-fluid",     name: "Mystic 2.5 Fluid",             unlimited: true,  refs: false, maxImages: 8  },
   // mystic-lora, mystic-sref removed — confirmed invalid (422) via live probe 2026-06-08
 
-  // Seedream family (seedream-5-lite is credit-based — moved below)
+  // Seedream family — seedream-5-lite + seedream-5-pro are now UNLIMITED on Premium+ (verified 2026-10-06)
   { id: "seedream-4-5",         name: "Seedream 4.5",                 unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','4k'] },
   { id: "seedream-4",           name: "Seedream 4",                   unlimited: true,  refs: true,  maxImages: 4  },
   { id: "seedream-4-4k",        name: "Seedream 4 4K",                unlimited: true,  refs: true,  maxImages: 4  },
   { id: "seedream",             name: "Seedream",                     unlimited: true,  refs: true,  maxImages: 4  },
+  { id: "seedream-5-lite",      name: "Seedream 5 Lite",              unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','3k'] },
+  { id: "seedream-5-pro",       name: "Seedream 5 Pro",               unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','4k'] },
   // seedream-4-5-4k removed — confirmed invalid (422) via live probe 2026-06-08
 
   // Google — all 3 Nano Banana variants confirmed active via /app/api/tti-modes 2026-06-08
   // Resolution tiers (1k/2k/4k) are passed as a parameter — not separate mode IDs
   { id: "imagen-nano-banana",         name: "Google Nano Banana",           unlimited: true,  refs: true,  maxImages: 4  },
-  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.1 Flash" },
-  { id: "imagen-nano-banana-2",       name: "Google Nano Banana Pro",       unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.0 Pro" },
+  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.1 Flash — UNLIMITED on P+ (1k/2k)" },
+  { id: "imagen-nano-banana-2-lite",  name: "Google Nano Banana 2 Lite",    unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k'], note: "UNLIMITED on P+ (1k)" },
   { id: "imagen3",              name: "Google Imagen 3",              unlimited: true,  refs: false, maxImages: 12 },
   { id: "imagen4-fast",         name: "Google Imagen 4 Fast",         unlimited: true,  refs: false, maxImages: 8  },
   { id: "imagen4",              name: "Google Imagen 4",              unlimited: true,  refs: false, maxImages: 1  },
@@ -192,40 +193,38 @@ const IMAGE_MODELS = [
   { id: "ideogram",             name: "Ideogram",                     unlimited: true,  refs: true,  maxImages: 2  },
   // ideogram-character removed — confirmed invalid (422) via live probe 2026-06-08
   { id: "z-image",              name: "Z-Image",                      unlimited: true,  refs: false, maxImages: 8  },
-  { id: "gpt-medium",           name: "GPT",                          unlimited: true,  refs: true,  maxImages: 1  },
-  { id: "gpt-high",             name: "GPT 1 - HQ",                   unlimited: true,  refs: true,  maxImages: 1  },
-  { id: "recraft-v4-1",         name: "Recraft V4.1",                 unlimited: true,  refs: false, maxImages: 4,  note: "Hidden mode — not in Magnific UI but confirmed valid 2026-06-08" },
+  { id: "recraft-v4",           name: "Recraft V4",                   unlimited: true,  refs: false, maxImages: 4,  note: "UNLIMITED on P+ (verified 2026-10-06)" },
+  { id: "recraft-v4-1",         name: "Recraft V4.1",                 unlimited: true,  refs: false, maxImages: 4,  note: "Hidden mode — not in Magnific UI but confirmed valid" },
+  { id: "qwen",                 name: "Qwen",                         unlimited: true,  refs: true,  maxImages: 2,  note: "UNLIMITED on P+ (verified 2026-10-06)" },
+  { id: "grok",                 name: "Grok",                         unlimited: true,  refs: true,  maxImages: 8,  note: "UNLIMITED on P+ (verified 2026-10-06)" },
+  { id: "grok-imagine-2",       name: "Grok Imagine 2",               unlimited: true,  refs: true,  maxImages: 4,  note: "UNLIMITED on P+ (verified 2026-10-06)" },
   { id: "runway-gen4",          name: "Runway",                       unlimited: true,  refs: true,  maxImages: 2,  note: "Deprecated by Magnific — still accepts requests" },
   { id: "reve",                 name: "Reve",                         unlimited: true,  refs: true,  maxImages: 8,  note: "Currently inactive in Magnific — may fail" },
 
   // ── Credit-based (costs credits even on Premium+) ─────────────────────────
   // (credits: null = credit-based but exact cost not in Magnific API — check Magnific UI)
 
-  // Flux.2 credit model
-  { id: "flux-2-max",           name: "Flux.2 Max",                   unlimited: false, credits: 65,   refs: true,  maxImages: 1,  resolutions: ['1k','2k'] },
+  // (credit values from /app/api/v2/ai-models credits.min, verified 2026-10-06)
 
-  // Seedream credit model
-  { id: "seedream-5-lite",      name: "Seedream 5 Lite",              unlimited: false, credits: null, refs: true,  maxImages: 4,  resolutions: ['2k','3k'] },
+  // Flux.2 credit models — flux-2-flex + flux-2-max cost credits on Premium+ (unlimited only in Pro tier)
+  { id: "flux-2-flex",          name: "Flux.2 Flex",                  unlimited: false, credits: 80,   refs: true,  maxImages: 4,  resolutions: ['1k','2k'] },
+  { id: "flux-2-max",           name: "Flux.2 Max",                   unlimited: false, credits: 130,  refs: true,  maxImages: 1,  resolutions: ['1k','2k'] },
 
-  // Qwen — credit-based (no unlimited badge in tti-modes)
-  { id: "qwen",                 name: "Qwen",                         unlimited: false, credits: null, refs: true,  maxImages: 2  },
-  // qwen-edit removed — confirmed invalid (422) via live probe 2026-06-08
+  // Google Nano Banana Pro (imagen-nano-banana-2) — credit-based on Premium+ (unlimited only in Pro tier)
+  { id: "imagen-nano-banana-2", name: "Google Nano Banana Pro",       unlimited: false, credits: 75,   refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.0 Pro — Pro-tier unlimited only" },
 
-  // Grok — credit-based (no unlimited badge in tti-modes)
-  { id: "grok",                 name: "Grok",                         unlimited: false, credits: null, refs: true,  maxImages: 8  },
-  // grok-edit removed — confirmed invalid (422) via live probe 2026-06-08
-
-  // Recraft credit models
-  { id: "recraft-v4",           name: "Recraft V4",                   unlimited: false, credits: null, refs: false, maxImages: 4  },
+  // Recraft credit model
   { id: "recraft-v4-pro",       name: "Recraft V4 Pro",               unlimited: false, credits: 175,  refs: false, maxImages: 4  },
 
-  // GPT credit models (gpt-medium and gpt-high are unlimited — moved above)
+  // GPT credit models — gpt-medium/gpt-high are credit-based on Premium+ per live v2 catalog (Pro-tier unlimited)
+  { id: "gpt-medium",           name: "GPT",                          unlimited: false, credits: 150,  refs: true,  maxImages: 1  },
+  { id: "gpt-high",             name: "GPT 1 - HQ",                   unlimited: false, credits: 500,  refs: true,  maxImages: 1  },
   { id: "gpt-1-5-medium",       name: "GPT 1.5",                      unlimited: false, credits: 150,  refs: true,  maxImages: 1  },
   { id: "gpt-1-5-high",         name: "GPT 1.5 - High",               unlimited: false, credits: 500,  refs: true,  maxImages: 1  },
   { id: "gpt-2",                name: "GPT 2",                        unlimited: false, credits: 200,  refs: true,  maxImages: 1,  resolutions: ['1k','2k','4k'] },
 
-  // cinematic — hidden mode, confirmed valid (uses imagen-nano-banana-2 backend), plan type unknown
-  // { id: "cinematic",         name: "Cinematic",                    unlimited: false, credits: null, refs: false, maxImages: 4  },
+  // Cinematic — credit-based on Premium+ (isUnlimited:false in v2 catalog); uses nano-banana-2 backend
+  { id: "cinematic",            name: "Cinematic",                    unlimited: false, credits: 75,   refs: false, maxImages: 4,  resolutions: ['1k','2k'] },
 ];
 
 // ── Reference-image limits ──────────────────────────────────────────────────
@@ -238,10 +237,10 @@ const IMAGE_REF_LIMITS = {
   "auto": 8,
   "flux-kontext": 4, "flux-kontext-high": 4,
   "flux-2": 4, "flux-2-klein": 4, "flux-2-flex": 4, "flux-2-max": 8,
-  "seedream": 8, "seedream-4": 8, "seedream-4-4k": 8, "seedream-4-5": 8, "seedream-5-lite": 14,
-  "imagen-nano-banana": 8, "imagen-nano-banana-2": 14, "imagen-nano-banana-2-flash": 14,
+  "seedream": 8, "seedream-4": 8, "seedream-4-4k": 8, "seedream-4-5": 8, "seedream-5-lite": 14, "seedream-5-pro": 14,
+  "imagen-nano-banana": 8, "imagen-nano-banana-2": 14, "imagen-nano-banana-2-flash": 14, "imagen-nano-banana-2-lite": 14,
   "gpt-medium": 16, "gpt-high": 16, "gpt-1-5-medium": 8, "gpt-1-5-high": 8, "gpt-2": 16,
-  "qwen": 3, "grok": 1, "runway-gen4": 3, "reve": 8,
+  "qwen": 3, "grok": 1, "grok-imagine-2": 1, "runway-gen4": 3, "reve": 8,
 };
 for (const m of IMAGE_MODELS) {
   const lim = IMAGE_REF_LIMITS[m.id];
@@ -269,7 +268,7 @@ const VIDEO_MODELS = [
   // ── ByteDance ────────────────────────────────────────────────────────────────
   { id: 'bytedance-seedance-fast-2.0',   name: 'Seedance 2.0 Fast',          credits: 44,   api: 'bytedance',    videoModel: 'seedance',          videoMode: 'fast-2.0',          sf: true,  ef: true,  refs: true,  refsLimit: 9,  resolutions: ['720p','480p'],              durations: [4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'bytedance-seedance-pro-2.0',    name: 'Seedance 2.0',               credits: 57,   api: 'bytedance',    videoModel: 'seedance',          videoMode: 'pro-2.0',           sf: true,  ef: true,  refs: true,  refsLimit: 9,  resolutions: ['1080p','720p','480p'],      durations: [4,5,6,7,8,9,10,11,12,13,14,15] },
-  { id: 'bytedance-seedance-pro-1.5',    name: 'Seedance 1.5 Pro',           credits: 180,  api: 'bytedance',    videoModel: 'seedance',          videoMode: 'pro-1.5',           sf: true,  ef: true,  refs: false,               resolutions: ['1080p','720p','480p'],      durations: [4,5,6,7,8,9,10,11,12] },
+  { id: 'bytedance-seedance-pro-1.5',    name: 'Seedance 1.5 Pro',           credits: 60,   api: 'bytedance',    videoModel: 'seedance',          videoMode: 'pro-1.5',           sf: true,  ef: true,  refs: false,               resolutions: ['1080p','720p','480p'],      durations: [4,5,6,7,8,9,10,11,12], unlimited: true, unlimitedResolution: '480p', note: 'UNLIMITED on P+ in Draft mode only (verified 2026-10-06)' },
   { id: 'bytedance-omnihuman-lipsync',   name: 'Omni Human 1.5',             credits: 540,  api: 'bytedance',    videoModel: 'omnihuman',         videoMode: 'omni_human',        sf: true,  ef: false, refs: false, sfRequired: true,  resolutions: [],                          durations: [3,30] },
   // ── Kling ────────────────────────────────────────────────────────────────────
   { id: 'kling-30',                      name: 'Kling 3.0',                  credits: 210,  api: 'kling',        videoModel: 'kling',             videoMode: '30',                sf: true,  ef: true,  refs: false,               resolutions: ['4K','1080p','720p'],        durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
@@ -304,7 +303,7 @@ const VIDEO_MODELS = [
   { id: 'wan-2-7',                       name: 'Wan 2.7',                    credits: 260,  api: 'wan',          videoModel: 'wan',               videoMode: '2-7',               sf: true,  ef: true,  refs: true,  refsLimit: 5,  resolutions: ['1080p','720p'],             durations: [2,3,4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'wan-2-6',                       name: 'Wan 2.6',                    credits: 1000, api: 'wan',          videoModel: 'wan',               videoMode: '2-6',               sf: true,  ef: false, refs: false,               resolutions: ['1080p','720p'],             durations: [5,10,15] },
   { id: 'wan-2-5',                       name: 'Wan 2.5',                    credits: 500,  api: 'wan',          videoModel: 'wan',               videoMode: '2-5',               sf: true,  ef: false, refs: false,               resolutions: ['1080p','720p','480p'],      durations: [5,10] },
-  { id: 'wan-2-2',                       name: 'Wan 2.2',                    credits: 0,    api: 'wan',          videoModel: 'wan',               videoMode: '2-2',               sf: true,  ef: false, refs: false, sfRequired: true,  resolutions: ['720p','580p','480p'],       durations: [5,10], unlimited: true, unlimitedResolution: '480p' },
+  { id: 'wan-2-2',                       name: 'Wan 2.2',                    credits: 80,   api: 'wan',          videoModel: 'wan',               videoMode: '2-2',               sf: true,  ef: false, refs: false, sfRequired: true,  resolutions: ['720p','580p','480p'],       durations: [5,10], note: 'No longer unlimited on P+ (isUnlimited:false in v2 catalog 2026-10-06)' },
   { id: 'wan-2-2-animate',               name: 'Wan 2.2 Animate Move',       credits: 600,  api: 'wan',          videoModel: 'wan',               videoMode: '2-2-animate',       sf: false, ef: false, refs: true,  refsLimit: 2,  resolutions: ['720p','580p','480p'],       durations: [3,30] },
   { id: 'happy-horse-1',                 name: 'Happy Horse',                credits: 720,  api: 'wan',          videoModel: 'wan',               videoMode: 'happy-horse-1',     sf: true,  ef: false, refs: true,  refsLimit: 9,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
   { id: 'happy-horse-1-edit',            name: 'Happy Horse Edit',           credits: 720,  api: 'wan',          videoModel: 'wan',               videoMode: 'happy-horse-1-edit',sf: false, ef: false, refs: true,  refsLimit: 5,  resolutions: ['1080p','720p'],             durations: [3,4,5,6,7,8,9,10,11,12,13,14,15] },
