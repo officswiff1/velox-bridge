@@ -75,7 +75,7 @@ function setupTOTP() {
         digits: 6,
         period: 30,
       });
-      console.log("[TOTP] Admin 2FA ready. Secret loaded from TOTP_SECRET env var.");
+      console.log(`[TOTP] Admin 2FA ready. Secret loaded from env (len=${TOTP_SECRET_B32.length}, ...${TOTP_SECRET_B32.slice(-4)}).`);
     } catch (e) {
       console.error("[TOTP] Invalid TOTP_SECRET:", e.message);
     }
@@ -122,7 +122,7 @@ function isValidAdminSession(token) {
 
 function verifyTOTP(code) {
   if (!TOTP_INSTANCE) return false;
-  const delta = TOTP_INSTANCE.validate({ token: String(code).replace(/\s/g, ""), window: 10 });
+  const delta = TOTP_INSTANCE.validate({ token: String(code).replace(/\s/g, ""), window: 1 });
   return delta !== null;
 }
 
