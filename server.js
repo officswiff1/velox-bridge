@@ -2901,6 +2901,14 @@ async function checkAccountPlan(acc) {
     return;
   }
 
+  if (plan === 'unpaid') {
+    Object.assign(acc, { planStatus: 'unpaid', plan: result.planName || 'Unpaid', isPremium: false,
+      credits: 0, creditsTotal: 0 });
+    acc.status = 'inactive';
+    addLog('WARN', `[${acc.name}] Auto-deactivated — payment failed (unpaid). Nothing works on this account. Consider removing it.`);
+    return;
+  }
+
   if (plan === 'premium') {
     acc.planStatus  = 'premium';
     acc.isPremium   = true;
@@ -3987,7 +3995,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
     .acc-card{background:#0f0f0f;border:1px solid #222;border-radius:9px;padding:14px}
     .acc-name{font-size:14px;font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .acc-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-    .plan-premium{color:#4ade80}.plan-expired{color:#f87171}.plan-free{color:#facc15}
+    .plan-premium{color:#4ade80}.plan-expired{color:#f87171}.plan-free{color:#facc15}.plan-unpaid{color:#f97316}
     .cr-green{color:#4ade80}.cr-yellow{color:#facc15}.cr-red{color:#f87171}
   </style>
 </head>
@@ -4039,7 +4047,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
           </div>
           <div>
             <div style="font-size:9px;color:#555;margin-bottom:1px">PLAN</div>
-            <div style="font-size:12px;font-weight:600" class="plan-${a.planStatus||'unknown'}">${a.plan||(a.planStatus==='expired'?'Expired':a.planCheckedAt?'—':'…')}${a.isTrial?' 🆕':''}</div>
+            <div style="font-size:12px;font-weight:600" class="plan-${a.planStatus||'unknown'}">${a.plan||(a.planStatus==='expired'?'Expired':a.planStatus==='unpaid'?'Unpaid':a.planCheckedAt?'—':'…')}${a.isTrial?' 🆕':''}</div>
             ${a.planExpiry?`<div style="font-size:9px;color:#555">↻ ${a.planExpiry}</div>`:''}
           </div>
           ${a.credits!=null?`<div>
@@ -4053,6 +4061,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
             ${a.planCheckedAt?`<div style="font-size:9px;color:#444">${a.planCheckedAt}</div>`:''}
           </div>
         </div>
+        ${a.planStatus==='unpaid'?`<div style="margin-top:8px;padding:6px 10px;background:#f973160f;border:1px solid #f97316;border-radius:6px;font-size:11px;color:#f97316">⚠️ Payment failed — nothing works on this account. Consider removing it.</div>`:''}
         ${(()=>{
           // Last used display
           let lastUsedHtml = '';

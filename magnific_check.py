@@ -71,18 +71,20 @@ def main():
             if perms.get('isFree'):
                 result['plan'] = 'free'
             elif purchases:
-                # Find active purchase
-                active = next((p for p in purchases if p.get('status') == 'active'), None)
-                if active:
-                    result['plan']       = 'premium'
-                    result['planName']   = active.get('productName') or active.get('name')
-                    result['expiresAt']  = active.get('expiresAt') or active.get('nextChargeDate')
-                    result['purchaseId'] = active.get('id')
+                last = purchases[-1]
+                purchase_status = (last.get('purchaseStatus') or '').lower()
+                product = last.get('purchaseProduct') or {}
+                result['planName']      = product.get('productName') or last.get('name')
+                result['expiresAt']     = last.get('purchaseNextBillingDate') or last.get('expiresAt')
+                result['purchaseStatus'] = purchase_status
+
+                ACTIVE_STATUSES = {'active', 'trialing', 'past_due', 'non_renewed'}
+                if purchase_status == 'unpaid':
+                    result['plan'] = 'unpaid'
+                elif purchase_status in ACTIVE_STATUSES:
+                    result['plan'] = 'premium'
                 else:
                     result['plan'] = 'expired'
-                    last = purchases[-1]
-                    result['planName']  = last.get('productName') or last.get('name')
-                    result['expiresAt'] = last.get('expiresAt')
             else:
                 result['plan'] = 'free'
         elif r2.status_code in (401, 403):
