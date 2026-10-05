@@ -2933,11 +2933,11 @@ async function checkAccountPlan(acc) {
 
   addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
 
-  // Re-activate if this account was previously marked inactive with stale/dead cookies
-  if (acc.status === 'inactive' && (acc.planStatus === 'premium' || acc.planStatus === 'expired')) {
+  // Re-activate only if premium — expired/unpaid/free accounts stay inactive
+  if (acc.status === 'inactive' && acc.planStatus === 'premium') {
     acc.status = 'active';
     acc.sessionDead = false;
-    addLog('INFO', `[${acc.name}] Re-activated — fresh session confirmed, plan=${acc.planStatus}`);
+    addLog('INFO', `[${acc.name}] Re-activated — fresh session confirmed, plan=premium`);
   }
 }
 
@@ -3846,7 +3846,11 @@ app.get('/v1/accounts/plans', auth, (req, res) => {
 });
 
 // ── POST /v1/accounts/plans/refresh ──────────────────────────────────────────
-app.post('/v1/accounts/plans/refresh', auth, async (req, res) => {
+app.post('/v1/accounts/plans/refresh', (req, res, next) => {
+  // Accept either admin cookie session (from admin UI) or API key (external callers)
+  if (isValidAdminSession(req.cookies?.admin_session)) return next();
+  auth(req, res, next);
+}, async (req, res) => {
   checkAllAccountPlans(true).catch(() => {});
   res.json({ ok: true, message: 'Plan refresh started for all active accounts' });
 });
