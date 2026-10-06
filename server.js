@@ -836,10 +836,32 @@ class AccountManager {
       addLog("INFO", `[${acc.name}] Challenge cleared — generations succeeding again`);
     }
   }
+
+  // Fair-Use unlimited quota exhausted: account is Premium+ but has used up its
+  // unlimited allowance this cycle (errorCode tool_limit_reached). Credits still
+  // work, but unlimited models should rotate to another account until the cooldown.
+  markUnlimitedExhausted(acc) {
+    acc.unlimitedExhaustedUntil = Date.now() + UNLIMITED_EXHAUSTED_COOLDOWN_MS;
+    addLog("WARN", `[${acc.name}] Unlimited Fair-Use limit reached — skipping for unlimited models until ${new Date(acc.unlimitedExhaustedUntil).toISOString()}`);
+  }
+
+  clearUnlimitedExhausted(acc) {
+    if (acc.unlimitedExhaustedUntil) {
+      acc.unlimitedExhaustedUntil = 0;
+      addLog("INFO", `[${acc.name}] Unlimited Fair-Use window cleared — unlimited generations succeeding again`);
+    }
+  }
+}
+
+function isUnlimitedExhausted(acc) {
+  return acc.unlimitedExhaustedUntil && acc.unlimitedExhaustedUntil > Date.now();
 }
 
 // How long to skip a CAPTCHA-challenged account before retrying it (clears early on a success).
 const CAPTCHA_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+// How long to skip an account for UNLIMITED models after it hits the Fair-Use limit.
+// Magnific's unlimited cycle resets periodically; 30 min is a reasonable retry probe.
+const UNLIMITED_EXHAUSTED_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 
 // Detect a CAPTCHA / anti-bot challenge from a Magnific response.
 // Returns a human-readable reason string, or null if it's not a challenge.
@@ -1363,6 +1385,7 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   // Step 2: Queue each image via render/v4 on ak-data.magnific.com
   let queued = 0;
   let renderChallenge = null; // set if render/v4 returns a CAPTCHA/anti-bot challenge
+  let renderLimitHit = false; // set if render/v4 returns tool_limit_reached (unlimited Fair-Use exhausted)
   for (let i = 0; i < num_images; i++) {
     const request_token = requestTokens[i];
     if (!request_token) {
@@ -1405,6 +1428,8 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
       } else {
         const ch = detectChallenge(rv.status, rv.json, rv.text);
         if (ch) renderChallenge = ch;
+        const blob = `${rv.json?.errorCode || ''} ${rv.json?.message || ''} ${rv.text || ''}`;
+        if (/tool_limit_reached|tool[_ ]usage[_ ]limit/i.test(blob)) renderLimitHit = true;
         addLog("WARN", `[${acc.name}] render/v4 image ${i} → ${rv.status}: ${rv.text.slice(0, 200)}`);
       }
     } catch (e) {
@@ -1413,6 +1438,13 @@ async function generateImages(acc, { prompt, num_images = 1, aspect_ratio = "1:1
   }
 
   if (queued === 0) {
+    if (renderLimitHit) {
+      manager.markUnlimitedExhausted(acc);
+      const err = new Error(`Unlimited Fair-Use limit reached on account "${acc.name}" — rotating to another account`);
+      err.status = 429;
+      err.unlimitedExhausted = true;
+      throw err;
+    }
     if (renderChallenge) {
       const err = new Error(`Magnific requires CAPTCHA/anti-bot verification on this account: ${renderChallenge}. Solve it in a browser, then re-export cookies.`);
       err.status = 423;
@@ -1673,6 +1705,18 @@ async function generateVideo(acc, {
         || item.clips?.[0]?.error || item.clips?.[0]?.metadata?.error;
       addLog('WARN', `[${acc.name}] Video failed — identifier=${identifier} model=${vm.id} errorCode=${errorCode} full=${JSON.stringify(item).slice(0, 600)}`);
       // errorCode 500001 = Magnific backend failure (credits OR model unavailable — no way to distinguish)
+      // Fair-Use unlimited quota exhausted on THIS account — not a credit/plan issue.
+      // Mark it so rotation skips it for unlimited models until the next cycle reset,
+      // and signal tryWithRotation to try another account.
+      const limitHit = errorCode === 'tool_limit_reached'
+        || /tool[_ ]usage[_ ]limit|tool_limit_reached/i.test(String(errDetail || ''));
+      if (limitHit) {
+        manager.markUnlimitedExhausted(acc);
+        const err = new Error(`Unlimited Fair-Use limit reached on account "${acc.name}" for "${vm.id}" — rotating to another account`);
+        err.status = 429;
+        err.unlimitedExhausted = true;
+        throw err;
+      }
       let reason = errDetail;
       if (!reason) {
         if (errorCode === 500001) {
@@ -2691,6 +2735,7 @@ async function tryWithRotation(pool, tag, fn) {
         release();
         // Track last successful generation for admin UI
         manager.clearChallenge(freeAcc); // success → not challenged anymore
+        manager.clearUnlimitedExhausted(freeAcc); // success → unlimited quota available again
         freeAcc.lastUsedAt = Date.now();
         freeAcc.lastUsedTag = tag; // 'image' | 'video' | 'audio' | etc.
         return result;
@@ -2746,6 +2791,7 @@ async function tryWithRotation(pool, tag, fn) {
       const result = await fn(waitAcc);
       release2();
       manager.clearChallenge(waitAcc); // success → not challenged anymore
+      manager.clearUnlimitedExhausted(waitAcc); // success → unlimited quota available again
       waitAcc.lastUsedAt = Date.now();
       waitAcc.lastUsedTag = tag;
       return result;
@@ -2793,6 +2839,22 @@ async function generateVideoWithRotation(params) {
   // For credit-based video models, skip accounts with insufficient credits.
   const vm = VIDEO_MODELS.find(m => m.id === params.model);
   const creditCost = vm?.credits || 0;
+
+  // For UNLIMITED video models, skip accounts whose Fair-Use unlimited quota is
+  // exhausted (errorCode tool_limit_reached) — route to a fresh account instead.
+  if (vm?.unlimited) {
+    const fresh = pool.filter(a => !isUnlimitedExhausted(a));
+    if (fresh.length > 0 && fresh.length < pool.length) {
+      addLog('INFO', `Unlimited video "${params.model}" — skipping ${pool.length - fresh.length} Fair-Use-exhausted account(s)`);
+      pool = fresh;
+    } else if (fresh.length === 0) {
+      throw Object.assign(
+        new Error(`All ${pool.length} account(s) have hit the unlimited Fair-Use limit for "${params.model}". Add another account, or wait for the cycle to reset.`),
+        { status: 429 }
+      );
+    }
+  }
+
   if (!vm?.unlimited && creditCost > 0) {
     // Skip CAPTCHA-challenged accounts for credit models (so one challenged account
     // doesn't take credit models down). Fall back to the full pool if all are challenged.
@@ -3033,6 +3095,21 @@ async function generateWithRotation(params) {
   // For credit-based models: prefer accounts that have enough credits.
   // If no account has been plan-checked yet (planCheckedAt undefined), include them all.
   let pool = manager.getPool();
+
+  // For UNLIMITED image models, skip Fair-Use-exhausted accounts (tool_limit_reached).
+  if (modelDef && modelDef.unlimited) {
+    const fresh = pool.filter(a => !isUnlimitedExhausted(a));
+    if (fresh.length > 0 && fresh.length < pool.length) {
+      addLog('INFO', `Unlimited image "${params.model || params.mode}" — skipping ${pool.length - fresh.length} Fair-Use-exhausted account(s)`);
+      pool = fresh;
+    } else if (fresh.length === 0 && pool.length > 0) {
+      throw Object.assign(
+        new Error(`All ${pool.length} account(s) have hit the unlimited Fair-Use limit for "${params.model || params.mode}". Add another account, or wait for the cycle to reset.`),
+        { status: 429 }
+      );
+    }
+  }
+
   if (needsCredits && creditCost > 0) {
     // Skip CAPTCHA-challenged accounts for credit models (fall back to full pool if all challenged).
     const now = Date.now();
@@ -3823,6 +3900,7 @@ app.get("/health", (req, res) => {
     userId: a.userId,
     status: a.status,
     challenged: a.challengedUntil > now,
+    unlimited_exhausted: !!(a.unlimitedExhaustedUntil && a.unlimitedExhaustedUntil > now),
     tokenExpiry:  a.grTokenExpiry ? new Date(a.grTokenExpiry).toISOString() : null,
     slots_active: a.semaphore?.active ?? 0,
     slots_total:  a.semaphore?.slots  ?? SLOTS_PER_ACCOUNT,
