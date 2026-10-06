@@ -1193,56 +1193,60 @@ Returns the last 100 server log entries. Useful for debugging.
 
 ## Image Models
 
-Use any of these `id` values as the `model` field in `/v1/images/generate`. All IDs verified against Magnific's live API 2026-06-08.
+Use any of these `id` values as the `model` field in `/v1/images/generate`.
 
-**Column key:** `refs` = max reference images accepted (`references[]`; — = not supported) · `max` = max images per generation · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K). `refs` values verified live from Magnific's `tti-modes` (`settings.maxReferences`), 2026-06-17.
+> **`GET /v1/models?type=image` is the live source of truth** for each model's `refs` (max references), `refs_limit`, `max_images`, and `resolutions` — it reflects the server's current limits, which are synced from Magnific's live `/app/api/v2/ai-models` (`references.maxTotal`, `inputs.numberOfImages`, `inputs.resolution`). The tables below are a snapshot (2026-10-06); if they ever disagree with `/v1/models`, trust `/v1/models`.
+
+**Column key:** `refs` = max reference images accepted (`references[]`; — = not supported) · `max` = max images per generation (Magnific's real ceiling is 24; the server honors each model's own max) · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K; tiers above the free level can cost credits even on unlimited models). All values verified live from `/app/api/v2/ai-models` 2026-10-06.
 
 ### Unlimited on Premium+ (no credits) — verified live 2026-10-06 via `/app/api/v2/ai-models` (`credits.isUnlimited=true`)
+
+`refs` = max references (live `references.maxTotal`). `max` = server's per-request image cap for this model (Magnific allows up to 24; use fewer for speed). Resolutions above the free tier can cost credits.
 
 | Model ID | Name | refs | max | Resolutions |
 |---|---|---|---|---|
 | `auto` | Auto | 8 | 4 | default |
 | **Flux.1 family** | | | | |
-| `flux` | Flux.1 Fast | — | 12 | default |
-| `flux-dev` | Flux.1 | — | 8 | default |
+| `flux` | Flux.1 Fast | 1 | 12 | default |
+| `flux-dev` | Flux.1 | 3 | 8 | default |
 | `flux-realism` | Flux.1 Realism | — | 12 | default |
-| `flux-pro-plus` | Flux.1.1 | — | 12 | default |
+| `flux-pro-plus` | Flux.1.1 | 1 | 12 | default |
 | `flux-kontext` | Flux.1 Kontext Pro | 4 | 8 | default |
 | `flux-kontext-high` | Flux.1 Kontext Max | 4 | 2 | default |
 | **Flux.2 family** | | | | |
 | `flux-2` | Flux.2 Pro | 4 | 2 | 1K, 2K |
 | `flux-2-klein` | Flux.2 Klein | 4 | 2 | 1K, 2K |
 | **Classic** | | | | |
-| `fast` | Classic Fast | — | 12 | default |
-| `classic` | Classic | — | 12 | default |
+| `fast` | Classic Fast | 1 | 12 | default |
+| `classic` | Classic | 1 | 12 | default |
 | **Mystic family** | | | | |
-| `mystic` | Mystic 1.0 | — | 8 | default |
-| `mystic-2-5` | Mystic 2.5 | — | 8 | default |
-| `mystic-2-5-flexible` | Mystic 2.5 Flexible | — | 12 | default |
-| `mystic-2-5-fluid` | Mystic 2.5 Fluid | — | 8 | default |
+| `mystic` | Mystic 1.0 | 3 | 8 | default |
+| `mystic-2-5` | Mystic 2.5 | 3 | 8 | default |
+| `mystic-2-5-flexible` | Mystic 2.5 Flexible | 1 | 12 | default |
+| `mystic-2-5-fluid` | Mystic 2.5 Fluid | 1 | 8 | default |
 | **Seedream family** | | | | |
 | `seedream-4-5` | Seedream 4.5 | 8 | 4 | 2K, 4K |
 | `seedream-4` | Seedream 4 | 8 | 4 | default |
 | `seedream-4-4k` | Seedream 4 4K | 8 | 4 | default |
 | `seedream` | Seedream | 8 | 4 | default |
-| `seedream-5-lite` | Seedream 5 Lite | 14 | 4 | 2K, 3K |
-| `seedream-5-pro` | Seedream 5 Pro | 14 | 4 | 2K, 4K |
+| `seedream-5-lite` | Seedream 5 Lite | 8 | 4 | 2K, 3K, 4K |
+| `seedream-5-pro` | Seedream 5 Pro | 10 | 4 | 1.5K, 2K |
 | **Google** | | | | |
 | `imagen-nano-banana` | Google Nano Banana | 8 | 4 | default |
-| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | 14 | 4 | 1K, 2K |
+| `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | 14 | 4 | 1K, 2K, 4K |
 | `imagen-nano-banana-2-lite` | Google Nano Banana 2 Lite | 14 | 4 | 1K |
 | `imagen3` | Google Imagen 3 | — | 12 | default |
 | `imagen4-fast` | Google Imagen 4 Fast | — | 8 | default |
 | `imagen4` | Google Imagen 4 | — | 1 | default |
 | `imagen4-ultra` | Google Imagen 4 Ultra | — | 1 | default |
 | **Other** | | | | |
-| `ideogram` | Ideogram | — | 2 | default |
-| `z-image` | Z-Image | — | 8 | default |
+| `ideogram` | Ideogram | 2 | 2 | default |
+| `z-image` | Z-Image | 1 | 8 | default |
 | `qwen` | Qwen | 3 | 2 | default |
-| `grok` | Grok | 1 | 8 | default |
-| `grok-imagine-2` | Grok Imagine 2 | 1 | 4 | default |
-| `recraft-v4` | Recraft V4 | — | 4 | default |
-| `recraft-v4-1` | Recraft V4.1 | — | 4 | default |
+| `grok` | Grok | 3 | 8 | default |
+| `grok-imagine-2` | Grok Imagine 2 | 3 | 4 | default |
+| `recraft-v4` | Recraft V4 | 1 | 4 | default |
+| `recraft-v4-1` | Recraft V4.1 | 1 | 4 | default |
 | `runway-gen4` | Runway *(deprecated — still works)* | 3 | 2 | default |
 | `reve` | Reve *(currently inactive)* | 8 | 8 | default |
 
@@ -1257,13 +1261,13 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 | `flux-2-flex` | Flux.2 Flex | 80 | 4 | 4 | 1K, 2K |
 | `flux-2-max` | Flux.2 Max | 130 | 8 | 1 | 1K, 2K |
 | `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | 75 | 14 | 4 | 1K, 2K |
-| `cinematic` | Cinematic | 75 | — | 4 | 1K, 2K |
+| `cinematic` | Cinematic | 75 | 8 | 4 | 1K, 2K, 4K |
 | `gpt-medium` | GPT | 150 | 16 | 1 | default |
 | `gpt-high` | GPT 1 - HQ | 500 | 16 | 1 | default |
-| `gpt-1-5-medium` | GPT 1.5 | 150 | 8 | 1 | default |
-| `gpt-1-5-high` | GPT 1.5 - High | 500 | 8 | 1 | default |
-| `gpt-2` | GPT 2 | 200 | 16 | 1 | 1K, 2K, **4K** |
-| `recraft-v4-pro` | Recraft V4 Pro | 175 | — | 4 | default |
+| `gpt-1-5-medium` | GPT 1.5 | 150 | 16 | 1 | default |
+| `gpt-1-5-high` | GPT 1.5 - High | 500 | 16 | 1 | default |
+| `gpt-2` | GPT 2 | 200 | 16 | 2 | 1K, 2K, **4K** |
+| `recraft-v4-pro` | Recraft V4 Pro | 175 | 1 | 4 | default |
 
 > **Premium+ vs Pro tier:** `flux-2-flex`, `flux-2-max` (1K), `imagen-nano-banana-2` (Nano Banana Pro), `cinematic`, `gpt-high`, `gpt-1-5-*` are unlimited only on the **Pro** tier — on Premium+/Business they cost credits (shown above). Source: official Magnific pricing doc + live `v2/ai-models`.
 
