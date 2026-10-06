@@ -3868,14 +3868,18 @@ app.get("/v1/models", (req, res) => {
         type: "video",
         unlimited: m.unlimited || false,
         credits: m.credits,
+        resolutions: m.resolutions || [],
+        durations:   m.durations || (m.noFixedDuration ? [] : [5, 10]),
         features: {
           start_image: m.sf || false,
           start_image_required: m.sfRequired || false,
           end_image:   m.ef || false,
-          video_input: m.vid || false,          // motion reference video (keyframes.video)
+          motion_transfer: m.vid || false,       // "Motion Transfer" slot (keyframes.video)
+          video_input: m.vid || false,          // alias
           video_required: m.vidRequired || false,
           references:  m.refs || false,
           refs_limit:  m.refsLimit || 0,
+          no_fixed_duration: m.noFixedDuration || false,
         },
       })),
       total: VIDEO_MODELS.length,
