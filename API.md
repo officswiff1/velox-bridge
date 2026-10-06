@@ -1,6 +1,6 @@
 # Magnific API — Developer Reference
 
-**Base URL:** `https://velox-bridge.onrender.com`
+**Base URL:** `https://freepik-api-qg08.onrender.com`
 
 This is a private proxy that turns Magnific/Freepik browser sessions into a clean REST API for AI image, video, audio, and utility generation. All generation endpoints require an API key. Responses follow a consistent JSON shape.
 
@@ -43,23 +43,23 @@ Completed → result contains the CDN URL
 
 ```bash
 # Step 1 — Submit a video job (returns instantly)
-curl -X POST https://velox-bridge.onrender.com/v1/videos/generate \
+curl -X POST https://freepik-api-qg08.onrender.com/v1/videos/generate \
   -H "X-API-Key: YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "a wave crashing on a rocky shore", "model": "kling-25"}'
 # → {"job_id":"job_abc123","status":"queued","retry_after":10,"poll_url":"/v1/jobs/job_abc123"}
 
 # Step 2 — Poll for result (repeat every retry_after seconds)
-curl https://velox-bridge.onrender.com/v1/jobs/job_abc123 \
+curl https://freepik-api-qg08.onrender.com/v1/jobs/job_abc123 \
   -H "X-API-Key: YOUR_KEY"
 # → {"status":"completed","result":{"url":"https://pikaso.cdnpk.net/...",...}}
 
 # Images and audio work the same way
-curl -X POST https://velox-bridge.onrender.com/v1/images/generate \
+curl -X POST https://freepik-api-qg08.onrender.com/v1/images/generate \
   -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"prompt": "a futuristic city at night", "model": "flux-2"}'
 
-curl -X POST https://velox-bridge.onrender.com/v1/audio/generate \
+curl -X POST https://freepik-api-qg08.onrender.com/v1/audio/generate \
   -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "model": "eleven_v3"}'
 ```
@@ -435,7 +435,7 @@ Upscales and enhances an image using Magnific's upscaler. Supports 2×, 4×, 8×
 Tested against the live deployment — full request and the **actual** response it returned:
 
 ```bash
-curl -X POST "https://velox-bridge.onrender.com/v1/images/upscale" \
+curl -X POST "https://freepik-api-qg08.onrender.com/v1/images/upscale" \
   -H "Content-Type: application/json" \
   -d '{
     "image_url": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=900&q=80",
@@ -621,7 +621,7 @@ When `status === "completed"`, `result` contains:
 }
 ```
 
-> **Account routing:** All active accounts are eligible for video generation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `wan-2-2`, etc.) any active account is used. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the server automatically routes only to accounts with sufficient credits — zero-credit accounts are skipped.
+> **Account routing:** All active accounts are eligible for video generation. For **unlimited models** (`kling-25`, `minimax-video-2_3`, `minimax-video-2_3-fast`, `bytedance-seedance-pro-1.5` Draft) any active account is used — and an account that hits the unlimited Fair-Use limit (`tool_limit_reached`) is skipped for ~30 min so the request rotates to a fresh account. For **credit-based models** (e.g. `bytedance-seedance-fast-2.0` = 44 credits), the server automatically routes only to accounts with sufficient credits — zero-credit accounts are skipped.
 
 ---
 
@@ -793,7 +793,7 @@ Provide either `image_url`/`image_data` (single front view) **or** `views` for m
 
 ```bash
 # Single image → 3D
-curl -X POST https://velox-bridge.onrender.com/v1/3d/generate \
+curl -X POST https://freepik-api-qg08.onrender.com/v1/3d/generate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -803,7 +803,7 @@ curl -X POST https://velox-bridge.onrender.com/v1/3d/generate \
   }'
 
 # Multi-view → 3D (more accurate)
-curl -X POST https://velox-bridge.onrender.com/v1/3d/generate \
+curl -X POST https://freepik-api-qg08.onrender.com/v1/3d/generate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -913,12 +913,12 @@ Lists all available models. No authentication required.
 | `type` | `unlimited` `credits` `video` `audio` `3d` | Filter by model type (omit for all image models) |
 
 ```
-GET /v1/models                  → all image models (43 total)
-GET /v1/models?type=unlimited   → unlimited image models (34)
-GET /v1/models?type=credits     → credit-based image models (9)
-GET /v1/models?type=video       → video models (42)
-GET /v1/models?type=audio       → audio/TTS models (6)
-GET /v1/models?type=3d          → 3D models (4)
+GET /v1/models                  → all image models
+GET /v1/models?type=unlimited   → unlimited image models (counts are live — this endpoint is the source of truth)
+GET /v1/models?type=credits     → credit-based image models
+GET /v1/models?type=video       → video models
+GET /v1/models?type=audio       → audio/TTS models
+GET /v1/models?type=3d          → 3D models
 ```
 
 ### Response (image)
@@ -1160,6 +1160,11 @@ Returns server status and live concurrency stats. No auth required.
 }
 ```
 
+The full response also includes a per-account `accounts[]` array. Each entry carries live flags, notably:
+- `challenged: true` — account is behind a CAPTCHA/anti-bot gate (skipped for credit models until solved).
+- `unlimited_exhausted: true` — account hit the unlimited Fair-Use limit (`tool_limit_reached`); skipped for **unlimited** models for ~30 min, then auto-retried. Credit models are unaffected.
+- `plan`, `planStatus`, `credits`, `creditsTotal` — live plan/credit data.
+
 ---
 
 ## GET /logs
@@ -1192,7 +1197,7 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 
 **Column key:** `refs` = max reference images accepted (`references[]`; — = not supported) · `max` = max images per generation · `resolutions` = available quality tiers (passed as `resolution` param; default = 1K). `refs` values verified live from Magnific's `tti-modes` (`settings.maxReferences`), 2026-06-17.
 
-### Unlimited — 34 models (no credits on Premium+/Pro)
+### Unlimited on Premium+ (no credits) — verified live 2026-10-06 via `/app/api/v2/ai-models` (`credits.isUnlimited=true`)
 
 | Model ID | Name | refs | max | Resolutions |
 |---|---|---|---|---|
@@ -1207,7 +1212,6 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 | **Flux.2 family** | | | | |
 | `flux-2` | Flux.2 Pro | 4 | 2 | 1K, 2K |
 | `flux-2-klein` | Flux.2 Klein | 4 | 2 | 1K, 2K |
-| `flux-2-flex` | Flux.2 Flex | 4 | 4 | 1K, 2K |
 | **Classic** | | | | |
 | `fast` | Classic Fast | — | 12 | default |
 | `classic` | Classic | — | 12 | default |
@@ -1221,10 +1225,12 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 | `seedream-4` | Seedream 4 | 8 | 4 | default |
 | `seedream-4-4k` | Seedream 4 4K | 8 | 4 | default |
 | `seedream` | Seedream | 8 | 4 | default |
+| `seedream-5-lite` | Seedream 5 Lite | 14 | 4 | 2K, 3K |
+| `seedream-5-pro` | Seedream 5 Pro | 14 | 4 | 2K, 4K |
 | **Google** | | | | |
 | `imagen-nano-banana` | Google Nano Banana | 8 | 4 | default |
 | `imagen-nano-banana-2-flash` | Google Nano Banana 2 (Gemini 3.1 Flash) | 14 | 4 | 1K, 2K |
-| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | 14 | 4 | 1K, 2K |
+| `imagen-nano-banana-2-lite` | Google Nano Banana 2 Lite | 14 | 4 | 1K |
 | `imagen3` | Google Imagen 3 | — | 12 | default |
 | `imagen4-fast` | Google Imagen 4 Fast | — | 8 | default |
 | `imagen4` | Google Imagen 4 | — | 1 | default |
@@ -1232,33 +1238,36 @@ Use any of these `id` values as the `model` field in `/v1/images/generate`. All 
 | **Other** | | | | |
 | `ideogram` | Ideogram | — | 2 | default |
 | `z-image` | Z-Image | — | 8 | default |
-| `gpt-medium` | GPT | 16 | 1 | default |
-| `gpt-high` | GPT 1 - HQ | 16 | 1 | default |
+| `qwen` | Qwen | 3 | 2 | default |
+| `grok` | Grok | 1 | 8 | default |
+| `grok-imagine-2` | Grok Imagine 2 | 1 | 4 | default |
+| `recraft-v4` | Recraft V4 | — | 4 | default |
 | `recraft-v4-1` | Recraft V4.1 | — | 4 | default |
 | `runway-gen4` | Runway *(deprecated — still works)* | 3 | 2 | default |
 | `reve` | Reve *(currently inactive)* | 8 | 8 | default |
 
-> **Resolution tiers** for Nano Banana 2, Nano Banana Pro, Seedream 4.5: the `resolution` param controls output quality. `4K` produces the largest images. No separate model ID is needed — same model ID, different `resolution` value.
+> **Resolution tiers** for Nano Banana 2, Seedream 4.5/5: the `resolution` param controls output quality. Requesting a tier above the free level can cost credits even on an unlimited model. Same model ID, different `resolution` value.
 
-> **`gpt-medium` and `gpt-high`** are unlimited (Premium+ users can generate at no credit cost). Do **not** confuse with `gpt-1-5-medium`/`gpt-1-5-high` which are credit-based.
+> **Label mapping:** "Nano Banana 2" = `imagen-nano-banana-2-flash` (unlimited); "Nano Banana 2 Lite" = `imagen-nano-banana-2-lite` (unlimited); "Nano Banana Pro" = `imagen-nano-banana-2` (**credit-based** on Premium+, see below).
 
-> **`recraft-v4-1`** is a hidden backend mode — not shown in Magnific's UI but confirmed valid. `recraft-v4` is the standard credit-based version.
-
-### Credit-Based — 9 models (deduct credits even on Premium+)
+### Credit-Based on Premium+ (deduct credits) — verified live 2026-10-06
 
 | Model ID | Name | Credits | refs | max | Resolutions |
 |---|---|---|---|---|---|
-| `flux-2-max` | Flux.2 Max | 65 | 8 | 1 | 1K, 2K |
-| `seedream-5-lite` | Seedream 5 Lite | varies | 14 | 4 | 2K, 3K |
-| `qwen` | Qwen | varies | 3 | 2 | default |
-| `grok` | Grok | varies | 1 | 8 | default |
-| `recraft-v4` | Recraft V4 | varies | — | 4 | default |
-| `recraft-v4-pro` | Recraft V4 Pro | 175 | — | 4 | default |
+| `flux-2-flex` | Flux.2 Flex | 80 | 4 | 4 | 1K, 2K |
+| `flux-2-max` | Flux.2 Max | 130 | 8 | 1 | 1K, 2K |
+| `imagen-nano-banana-2` | Google Nano Banana Pro (Gemini 3.0 Pro) | 75 | 14 | 4 | 1K, 2K |
+| `cinematic` | Cinematic | 75 | — | 4 | 1K, 2K |
+| `gpt-medium` | GPT | 150 | 16 | 1 | default |
+| `gpt-high` | GPT 1 - HQ | 500 | 16 | 1 | default |
 | `gpt-1-5-medium` | GPT 1.5 | 150 | 8 | 1 | default |
 | `gpt-1-5-high` | GPT 1.5 - High | 500 | 8 | 1 | default |
 | `gpt-2` | GPT 2 | 200 | 16 | 1 | 1K, 2K, **4K** |
+| `recraft-v4-pro` | Recraft V4 Pro | 175 | — | 4 | default |
 
-> **"varies"** — `seedream-5-lite`, `qwen`, `grok`, and `recraft-v4` consume credits but their exact per-image cost is not exposed in the API. Check the Magnific billing page for current rates.
+> **Premium+ vs Pro tier:** `flux-2-flex`, `flux-2-max` (1K), `imagen-nano-banana-2` (Nano Banana Pro), `cinematic`, `gpt-high`, `gpt-1-5-*` are unlimited only on the **Pro** tier — on Premium+/Business they cost credits (shown above). Source: official Magnific pricing doc + live `v2/ai-models`.
+
+> **Changed 2026-10-06:** `qwen`, `grok`, `recraft-v4`, `seedream-5-lite` moved to UNLIMITED; `flux-2-flex`, `imagen-nano-banana-2`, `gpt-medium`, `gpt-high` moved to CREDIT; added `seedream-5-pro`, `imagen-nano-banana-2-lite`, `grok-imagine-2`, `cinematic`. Re-discover anytime via `/app/api/v2/ai-models` `credits.isUnlimited`.
 
 > **Removed invalid models (2026-06-08):** `flux-sref`, `mystic-lora`, `mystic-sref`, `seedream-4-5-4k`, `ideogram-character`, `grok-edit`, `qwen-edit`, `imagen-nano-banana-2-4k`, `imagen-nano-banana-2-flash-2k`, `imagen-nano-banana-2-flash-4k` — all confirmed invalid (Magnific returns 422 "The selected mode is invalid"). Resolution variants (4K etc.) are a **parameter**, not separate model IDs.
 
@@ -1283,10 +1292,12 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. All 
 | `kling-25` | Kling 2.5 | ✅ | ✅ | — | 1080p, 720p | 5, 10 | 720p |
 | `minimax-video-2_3` | MiniMax Hailuo 2.3 | ✅ | — | — | 1080p, 768p | 6, 10 | 768p |
 | `minimax-video-2_3-fast` | MiniMax Hailuo 2.3 Fast | ⚠️ | — | — | 1080p, 768p | 6, 10 | 768p |
-| `wan-2-2` | Wan 2.2 | ⚠️ | — | — | 720p, 580p, 480p | 5, 10 | 480p |
+| `bytedance-seedance-pro-1.5` | Seedance 1.5 Pro *(Draft mode only)* | ✅ | ✅ | — | 1080p, 720p, 480p | 4–12 | 480p |
 
 > **Free resolution** = quality used when generating without extra credits. Higher resolutions cost credits.
-> **`minimax-video-2_3`** always defaults to 768p/6s. **`wan-2-2`** and **`minimax-video-2_3-fast`** require `start_image` — omitting returns HTTP 400.
+> **`minimax-video-2_3`** always defaults to 768p/6s. **`minimax-video-2_3-fast`** requires `start_image` — omitting returns HTTP 400.
+> **Verified live 2026-10-06** (`/app/api/v2/ai-models` `credits.isUnlimited=true` on Premium+). **`wan-2-2` is NO LONGER unlimited** — it now costs credits (moved to the Wan section). `bytedance-seedance-pro-1.5` is unlimited in **Draft mode (480p) only**.
+> **Fair-Use limit:** an unlimited video can still fail with `tool_limit_reached` ("No credits used — Tool usage limit reached") when the account's per-cycle quota is spent. The proxy auto-rotates to another account; see the 429 error in the error reference.
 
 ### ByteDance
 
@@ -1294,7 +1305,7 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. All 
 |---|---|---|---|---|---|---|---|
 | `bytedance-seedance-fast-2.0` | Seedance 2.0 Fast | 44 | ✅ | ✅ | ✅ up to 9 | 720p, 480p | 4–15 |
 | `bytedance-seedance-pro-2.0` | Seedance 2.0 | 57 | ✅ | ✅ | ✅ up to 9 | 1080p, 720p, 480p | 4–15 |
-| `bytedance-seedance-pro-1.5` | Seedance 1.5 Pro | 180 | ✅ | ✅ | — | 1080p, 720p, 480p | 4–12 |
+| `bytedance-seedance-pro-1.5` | Seedance 1.5 Pro *(unlimited in Draft/480p; credits above)* | 60 | ✅ | ✅ | — | 1080p, 720p, 480p | 4–12 |
 | `bytedance-omnihuman-lipsync` | Omni Human 1.5 | 540 | ⚠️ | — | — | — | 3, 30 |
 
 ### Kling
@@ -1350,6 +1361,7 @@ Use any of these `id` values as the `model` field in `/v1/videos/generate`. All 
 | `wan-2-7` | Wan 2.7 | 260 | ✅ | ✅ | ✅ up to 5 | 1080p, 720p | 2–15 |
 | `wan-2-6` | Wan 2.6 | 1000 | ✅ | — | — | 1080p, 720p | 5, 10, 15 |
 | `wan-2-5` | Wan 2.5 | 500 | ✅ | — | — | 1080p, 720p, 480p | 5, 10 |
+| `wan-2-2` | Wan 2.2 *(no longer unlimited — 2026-10-06; start_image required)* | 80 | ⚠️ | — | — | 720p, 580p, 480p | 5, 10 |
 | `wan-2-2-animate` | Wan 2.2 Animate Move | 600 | — | — | ✅ up to 2 | 720p, 580p, 480p | 3, 30 |
 | `happy-horse-1` | Happy Horse | 720 | ✅ | — | ✅ up to 9 | 1080p, 720p | 3–15 |
 | `happy-horse-1-edit` | Happy Horse Edit | 720 | — | — | ✅ up to 5 | 1080p, 720p | 3–15 |
@@ -1442,7 +1454,7 @@ All errors return JSON. For async jobs, check the `error` field on the job objec
 | `401` | Any | Invalid or missing API key |
 | `402` | Job result | Insufficient credits — see credit errors below |
 | `404` | Poll | Job not found or expired (jobs live 2 hours) |
-| `429` | Submit | All account slots busy — retry in a moment, or add more accounts |
+| `429` | Submit | All account slots busy, OR all accounts hit the unlimited Fair-Use limit (`tool_limit_reached`) — retry later or add more accounts |
 | `500` | Job result | Server error or Magnific generation error |
 | `503` | Submit | No active accounts available |
 
@@ -1507,6 +1519,17 @@ Returned immediately when all plan-checked accounts are confirmed under the cred
 ```json
 { "error": "Video generation failed: Magnific/provider-side generation timeout (errorCode 408001) — not the proxy. This is intermittent (provider load), not a hard limit: \"google-veo3_1\" at 4K often completes fine on retry. Retry the request; if it keeps failing, try again off-peak or at a lower resolution / shorter duration." }
 ```
+
+**Unlimited Fair-Use limit reached (errorCode `tool_limit_reached`, HTTP 429):**
+Applies ONLY to **unlimited** models (e.g. `kling-25`, `flux`, `seedream-4`). Magnific returns "Generation Failed — No credits were used — Tool usage limit reached" when an account exhausts its per-cycle unlimited Fair-Use quota. This is **not** a credit or plan problem.
+
+The proxy automatically **rotates to another account** when this happens. You only see an error if *every* account is exhausted:
+```json
+{ "error": "All 3 account(s) have hit the unlimited Fair-Use limit for \"kling-25\". Add another account, or wait for the cycle to reset." }
+```
+- An exhausted account is skipped for unlimited models for 30 minutes, then retried (cleared early on any success).
+- `GET /health` shows `unlimited_exhausted: true` per affected account.
+- **Fix: add more accounts** — each has its own Fair-Use cycle, and the proxy spreads unlimited load across them.
 
 **Proxy poll window exceeded (separate from 408001 — proxy stopped waiting):**
 ```json
@@ -1586,7 +1609,7 @@ Check live capacity at `GET /health`.
 ### JavaScript / Node.js (async — recommended)
 
 ```js
-const BASE = 'https://velox-bridge.onrender.com';
+const BASE = 'https://freepik-api-qg08.onrender.com';
 const KEY = 'your_api_key';
 const HEADERS = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 
@@ -1639,7 +1662,7 @@ async function generateAudio(text, voice = 'A-Xee') {
 ```python
 import requests, time
 
-BASE = "https://velox-bridge.onrender.com"
+BASE = "https://freepik-api-qg08.onrender.com"
 HEADERS = {"X-API-Key": "your_api_key", "Content-Type": "application/json"}
 
 def poll_job(job_id, interval=5, timeout=600):
@@ -1677,7 +1700,7 @@ print(result["url"])
 ### cURL (async workflow)
 
 ```bash
-BASE="https://velox-bridge.onrender.com"
+BASE="https://freepik-api-qg08.onrender.com"
 KEY="YOUR_KEY"
 
 # 1. Submit video job
@@ -1725,7 +1748,7 @@ curl -X POST $BASE/v1/images/describe \
 - **`flux-2-flex`** is unlimited (not credit-based) and supports 1K/2K output
 
 ### Video tips
-- **Unlimited video** — `kling-25` (text-to-video, up to 1080p), `minimax-video-2_3` (text-to-video 768p/6s), `wan-2-2` (image-to-video, 480p, start_image required), `minimax-video-2_3-fast` (image-to-video, 768p, start_image required)
+- **Unlimited video** — `kling-25` (text-to-video, up to 1080p), `minimax-video-2_3` (text-to-video 768p/6s), `minimax-video-2_3-fast` (image-to-video, 768p, start_image required), `bytedance-seedance-pro-1.5` (Draft/480p only). *(`wan-2-2` is no longer unlimited as of 2026-10-06.)*
 - **`start_image` required models** — `wan-2-2`, `minimax-video-2_3-fast`, `kling-21`, `kling-motion-control`, `kling-motion-control-30`, `bytedance-omnihuman-lipsync`, `minimax-video-01-live2d`, `runway-std`, `veed-fabric-1.0`, `veed-fabric-1.0-fast` — omitting `start_image` on these returns HTTP 400
 - **4K video** — `kling-30`, `kling-omni3`, `google-veo3_1`, `google-veo3_1-fast` support 4K; LTX models support 2160p
 - **Long-form video** — `veed-fabric-1.0/fast` supports up to 300s; `openai-sora2` supports up to 20s; LTX up to 20s; Grok and PixVerse 6 support 1–15s in 1s steps
