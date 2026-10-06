@@ -175,14 +175,14 @@ const IMAGE_MODELS = [
   { id: "seedream-4",           name: "Seedream 4",                   unlimited: true,  refs: true,  maxImages: 4  },
   { id: "seedream-4-4k",        name: "Seedream 4 4K",                unlimited: true,  refs: true,  maxImages: 4  },
   { id: "seedream",             name: "Seedream",                     unlimited: true,  refs: true,  maxImages: 4  },
-  { id: "seedream-5-lite",      name: "Seedream 5 Lite",              unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','3k'] },
-  { id: "seedream-5-pro",       name: "Seedream 5 Pro",               unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','4k'] },
+  { id: "seedream-5-lite",      name: "Seedream 5 Lite",              unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['2k','3k','4k'] },
+  { id: "seedream-5-pro",       name: "Seedream 5 Pro",               unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1.5k','2k'] },
   // seedream-4-5-4k removed — confirmed invalid (422) via live probe 2026-06-08
 
   // Google — all 3 Nano Banana variants confirmed active via /app/api/tti-modes 2026-06-08
   // Resolution tiers (1k/2k/4k) are passed as a parameter — not separate mode IDs
   { id: "imagen-nano-banana",         name: "Google Nano Banana",           unlimited: true,  refs: true,  maxImages: 4  },
-  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k'], note: "Gemini 3.1 Flash — UNLIMITED on P+ (1k/2k)" },
+  { id: "imagen-nano-banana-2-flash", name: "Google Nano Banana 2",         unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k','2k','4k'], note: "Gemini 3.1 Flash — UNLIMITED on P+ (1k/2k; 4k costs credits)" },
   { id: "imagen-nano-banana-2-lite",  name: "Google Nano Banana 2 Lite",    unlimited: true,  refs: true,  maxImages: 4,  resolutions: ['1k'], note: "UNLIMITED on P+ (1k)" },
   { id: "imagen3",              name: "Google Imagen 3",              unlimited: true,  refs: false, maxImages: 12 },
   { id: "imagen4-fast",         name: "Google Imagen 4 Fast",         unlimited: true,  refs: false, maxImages: 8  },
@@ -233,14 +233,23 @@ const IMAGE_MODELS = [
 // source of truth for which models accept reference images (references[]) and how
 // many. Models absent here expose no "image-references" feature in tti-modes.
 // We reconcile each model's refs/refsLimit from this map so the two never drift.
+// Authoritative max references (references.maxTotal) pulled LIVE from
+// /app/api/v2/ai-models 2026-10-06. 0/absent = no reference support.
 const IMAGE_REF_LIMITS = {
   "auto": 8,
+  "flux": 1, "flux-dev": 3, "flux-pro-plus": 1, // flux-realism = 0 (no refs)
   "flux-kontext": 4, "flux-kontext-high": 4,
   "flux-2": 4, "flux-2-klein": 4, "flux-2-flex": 4, "flux-2-max": 8,
-  "seedream": 8, "seedream-4": 8, "seedream-4-4k": 8, "seedream-4-5": 8, "seedream-5-lite": 14, "seedream-5-pro": 14,
+  "classic": 1, "fast": 1,
+  "mystic": 3, "mystic-2-5": 3, "mystic-2-5-flexible": 1, "mystic-2-5-fluid": 1,
+  "seedream": 8, "seedream-4": 8, "seedream-4-4k": 8, "seedream-4-5": 8, "seedream-5-lite": 8, "seedream-5-pro": 10,
   "imagen-nano-banana": 8, "imagen-nano-banana-2": 14, "imagen-nano-banana-2-flash": 14, "imagen-nano-banana-2-lite": 14,
-  "gpt-medium": 16, "gpt-high": 16, "gpt-1-5-medium": 8, "gpt-1-5-high": 8, "gpt-2": 16,
-  "qwen": 3, "grok": 1, "grok-imagine-2": 1, "runway-gen4": 3, "reve": 8,
+  "ideogram": 2,
+  "gpt-medium": 16, "gpt-high": 16, "gpt-1-5-medium": 16, "gpt-1-5-high": 16, "gpt-2": 16,
+  "qwen": 3, "grok": 3, "grok-imagine-2": 3,
+  "recraft-v4": 1, "recraft-v4-1": 1, "recraft-v4-pro": 1,
+  "z-image": 1, "cinematic": 8,
+  "runway-gen4": 3, "reve": 8,
 };
 for (const m of IMAGE_MODELS) {
   const lim = IMAGE_REF_LIMITS[m.id];
@@ -936,7 +945,9 @@ function normalizeResolution(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
   if (s === '4k' || s === '2160p' || s === 'ultra' || s === 'uhd') return '4k';
+  if (s === '3k' || s === '3072p') return '3k';
   if (s === '2k' || s === '1440p' || s === '2560p') return '2k';
+  if (s === '1.5k' || s === '1536p') return '1.5k';
   if (s === '1k' || s === '1080p' || s === 'hd') return '1k';
   return null; // unrecognized — let Magnific use its default
 }
@@ -3254,9 +3265,12 @@ app.post("/v1/images/generate", auth, async (req, res) => {
     }
   }
 
+  // Magnific allows up to 24 images/request (100 for flux). Cap at the model's own
+  // maxImages (from the catalog) so we don't over-request, with a hard ceiling of 24.
+  const modelMax = Math.min(modelInfo?.maxImages || 4, 24);
   const genParams = {
     prompt,
-    num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), 4),
+    num_images: Math.min(Math.max(parseInt(num_images) || 1, 1), modelMax),
     aspect_ratio,
     model: resolvedModel,
     variations: Boolean(variations),
