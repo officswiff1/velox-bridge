@@ -111,8 +111,53 @@ def main():
                 result['totalCredits'] = w.get('totalCredits')
                 result['creditsSpend'] = w.get('creditsSpend')
                 result['productName']  = w.get('productName') or result.get('planName')
+                result['hasUnlimitedTools'] = (w.get('profile') or {}).get('has_unlimited_tools', False)
         except Exception as e:
             result['walletError'] = str(e)
+
+    # Step 4: unlimited-status — priority usage % and cycle reset date
+    user_id = cookies.get('GRID') or cookies.get('UID') or ''
+    try:
+        uid_param = f'&user_id={user_id}' if user_id else ''
+        r4 = cffi.get(
+            f'{BASE}/app/api/unlimited-status?lang=en_US{uid_param}',
+            headers={**headers, 'referer': f'{BASE}/app/ai-image-generator'},
+            cookies=cookies,
+            impersonate='chrome131',
+            timeout=20,
+        )
+        if r4.status_code == 200:
+            us = r4.json()
+            result['unlimitedEnabled']   = us.get('is_unlimited_mode_enabled', False)
+            result['unlimitedRelaxed']   = us.get('is_relaxed_mode', False)
+            result['unlimitedBanned']    = us.get('is_banned', False)
+            result['unlimitedResetDate'] = us.get('unlimited_cycle_reset_date')
+            usage = us.get('usage') or {}
+            result['unlimitedUsagePct']  = usage.get('percent')
+        else:
+            result['unlimitedStatusCode'] = r4.status_code
+    except Exception as e:
+        result['unlimitedError'] = str(e)
+
+    # Step 5: limits — per-tool burst cycle remaining counts
+    try:
+        r5 = cffi.get(
+            f'{BASE}/app/api/limits?lang=en_US{uid_param}',
+            headers={**headers, 'referer': f'{BASE}/app/ai-image-generator'},
+            cookies=cookies,
+            impersonate='chrome131',
+            timeout=20,
+        )
+        if r5.status_code == 200:
+            lims = r5.json().get('limits', {})
+            # Summarise the burst remaining for unlimited tools only
+            unlimited_tools = {k: {'remaining': v.get('remaining'), 'cost': v.get('cost')}
+                               for k, v in lims.items() if v.get('unlimitedGenerations')}
+            result['burstLimits'] = unlimited_tools
+        else:
+            result['limitsStatusCode'] = r5.status_code
+    except Exception as e:
+        result['limitsError'] = str(e)
 
     print(json.dumps(result))
     sys.exit(0)

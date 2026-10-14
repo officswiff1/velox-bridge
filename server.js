@@ -3031,6 +3031,7 @@ async function checkAccountPlan(acc) {
     acc.creditsTotal = result.totalCredits ?? acc.creditsTotal ?? 0;
     acc.creditsUsed  = result.creditsSpend  ?? acc.creditsUsed  ?? 0;
     if (result.walletId) acc.walletId = result.walletId;
+    if (result.hasUnlimitedTools != null) acc.hasUnlimitedTools = result.hasUnlimitedTools;
   } else {
     // expired or unknown
     acc.planStatus = 'expired';
@@ -3038,7 +3039,17 @@ async function checkAccountPlan(acc) {
     acc.plan       = result.planName || acc.plan || 'Expired';
   }
 
-  addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Expiry: ${acc.planExpiry || 'N/A'}`);
+  // Unlimited priority usage (available on all plan tiers)
+  if (result.unlimitedEnabled != null) {
+    acc.unlimitedEnabled   = result.unlimitedEnabled;
+    acc.unlimitedRelaxed   = result.unlimitedRelaxed;
+    acc.unlimitedBanned    = result.unlimitedBanned;
+    acc.unlimitedResetDate = result.unlimitedResetDate;
+    acc.unlimitedUsagePct  = result.unlimitedUsagePct ?? null;
+  }
+  if (result.burstLimits) acc.burstLimits = result.burstLimits;
+
+  addLog('INFO', `[${acc.name}] Plan: ${acc.planStatus.toUpperCase()} | ${acc.plan} | Credits: ${acc.credits ?? '?'}/${acc.creditsTotal ?? '?'} | Unlimited: ${acc.unlimitedUsagePct != null ? acc.unlimitedUsagePct + '% used, resets ' + (acc.unlimitedResetDate || '?') : 'N/A'} | Expiry: ${acc.planExpiry || 'N/A'}`);
 
   // Re-activate only if premium — expired/unpaid/free accounts stay inactive
   if (acc.status === 'inactive' && acc.planStatus === 'premium') {
@@ -3930,6 +3941,9 @@ app.get("/health", (req, res) => {
     creditsTotal: a.creditsTotal ?? null,
     planExpiry:   a.planExpiry  || null,
     planCheckedAt: a.planCheckedAt ? new Date(a.planCheckedAt).toISOString() : null,
+    unlimitedUsagePct:  a.unlimitedUsagePct  ?? null,
+    unlimitedResetDate: a.unlimitedResetDate || null,
+    unlimitedBanned:    a.unlimitedBanned    ?? null,
   }));
   const activeAccounts = accounts.filter(a => a.status === 'active');
   res.json({
@@ -3972,6 +3986,13 @@ app.get('/v1/accounts/plans', auth, (req, res) => {
     planCheckedAt: a.planCheckedAt ? new Date(a.planCheckedAt).toISOString() : null,
     video:         a.video         ?? null,
     videoOverride: a.videoOverride ?? null,
+    hasUnlimitedTools:  a.hasUnlimitedTools  ?? null,
+    unlimitedEnabled:   a.unlimitedEnabled   ?? null,
+    unlimitedBanned:    a.unlimitedBanned    ?? null,
+    unlimitedRelaxed:   a.unlimitedRelaxed   ?? null,
+    unlimitedUsagePct:  a.unlimitedUsagePct  ?? null,
+    unlimitedResetDate: a.unlimitedResetDate || null,
+    burstLimits:        a.burstLimits        || null,
   })));
 });
 
