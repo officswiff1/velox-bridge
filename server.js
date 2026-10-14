@@ -4171,6 +4171,14 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
     lastUsedAt:   a.lastUsedAt  || null,
     lastUsedTag:  a.lastUsedTag || null,
     sessionDead:  a.sessionDead || false,
+    hasUnlimitedTools:  a.hasUnlimitedTools  ?? null,
+    unlimitedEnabled:   a.unlimitedEnabled   ?? null,
+    unlimitedBanned:    a.unlimitedBanned    ?? null,
+    unlimitedRelaxed:   a.unlimitedRelaxed   ?? null,
+    unlimitedUsagePct:  a.unlimitedUsagePct  ?? null,
+    unlimitedResetDate: a.unlimitedResetDate || null,
+    burstLimits:        a.burstLimits        || null,
+    unlimitedExhaustedUntil: a.unlimitedExhaustedUntil || null,
   }));
   const activeCount  = accounts.filter(a => a.status === 'active').length;
   const totalSlots   = activeCount * SLOTS_PER_ACCOUNT;
@@ -4222,7 +4230,7 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
     nav a{color:#60a5fa;text-decoration:none;font-size:13px;padding:5px 10px;border-radius:6px;background:#0f1826;border:1px solid #1a3a5c}
     nav a:hover{background:#1a3a5c}
     .storage-badge{font-size:11px;padding:3px 8px;border-radius:5px;background:#1a1a00;color:#facc15;border:1px solid #3a3a00}
-    .acc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:10px}
+    .acc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:10px}
     .acc-card{background:#0f0f0f;border:1px solid #222;border-radius:9px;padding:14px}
     .acc-name{font-size:14px;font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .acc-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
@@ -4292,6 +4300,66 @@ app.get("/admin", adminAuthMiddleware, (req, res) => {
             ${a.planCheckedAt?`<div style="font-size:9px;color:#444">${a.planCheckedAt}</div>`:''}
           </div>
         </div>
+
+        ${(()=>{
+          // ── Priority / unlimited usage bar ──────────────────────────────────
+          if (a.unlimitedUsagePct == null) return '';
+          const pct  = a.unlimitedUsagePct;
+          const barColor = pct >= 90 ? '#f87171' : pct >= 60 ? '#facc15' : '#4ade80';
+          const resetStr = a.unlimitedResetDate ? a.unlimitedResetDate.slice(0,10) : '?';
+          const bannedBadge = a.unlimitedBanned
+            ? `<span style="background:#450a0a;color:#f87171;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">BANNED</span>` : '';
+          const relaxedBadge = a.unlimitedRelaxed
+            ? `<span style="background:#1a1a0a;color:#facc15;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">RELAXED</span>` : '';
+          // Burst exhausted countdown
+          const exhausted = a.unlimitedExhaustedUntil && a.unlimitedExhaustedUntil > Date.now();
+          const exhaustedMin = exhausted ? Math.ceil((a.unlimitedExhaustedUntil - Date.now())/60000) : 0;
+          const exhaustedBadge = exhausted
+            ? `<span style="background:#450a0a;color:#fca5a5;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">BURST COOLDOWN ${exhaustedMin}m</span>` : '';
+          return `<div style="margin-top:8px;padding:7px 9px;background:#0a0f14;border:1px solid #1a2a3a;border-radius:7px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-size:10px;color:#60a5fa;font-weight:600">⚡ Priority Usage${bannedBadge}${relaxedBadge}${exhaustedBadge}</span>
+              <span style="font-size:10px;color:${barColor};font-weight:700">${pct}% <span style="color:#555;font-weight:400">· resets ${resetStr}</span></span>
+            </div>
+            <div style="background:#1a1a2a;border-radius:3px;height:5px;overflow:hidden">
+              <div style="background:${barColor};height:100%;width:${pct}%;transition:width .3s"></div>
+            </div>
+          </div>`;
+        })()}
+
+        ${(()=>{
+          // ── Burst limits: show drained tools ────────────────────────────────
+          if (!a.burstLimits) return '';
+          const entries = Object.entries(a.burstLimits);
+          const drained = entries.filter(([,v]) => v.remaining === 0);
+          const available = entries.filter(([,v]) => v.remaining > 0);
+          if (drained.length === 0 && available.length === 0) return '';
+
+          // Pretty-print model slug → short label
+          const pretty = s => s
+            .replace(/^(text-to-image-|reimagine-|retouch-|expand-|restyle-|background-|sketch-)/, '')
+            .replace(/-per[_-]image$/, '')
+            .replace(/-/g, ' ');
+
+          const availHtml = available.map(([k,v]) =>
+            `<span style="display:inline-block;background:#0a1a0a;border:1px solid #1a3a1a;border-radius:4px;padding:1px 6px;font-size:9px;color:#4ade80;margin:1px 2px 1px 0">${pretty(k)} <b>${v.remaining}</b></span>`
+          ).join('');
+
+          // Only show up to 8 drained ones to avoid overflow
+          const drainedShow = drained.slice(0,8);
+          const drainedMore = drained.length > 8 ? `<span style="font-size:9px;color:#555"> +${drained.length-8} more</span>` : '';
+          const drainedHtml = drainedShow.map(([k]) =>
+            `<span style="display:inline-block;background:#1a0a0a;border:1px solid #3a1a1a;border-radius:4px;padding:1px 6px;font-size:9px;color:#f87171;margin:1px 2px 1px 0">${pretty(k)} 0</span>`
+          ).join('') + drainedMore;
+
+          return `<div style="margin-top:6px;padding:7px 9px;background:#0a0a0f;border:1px solid #1a1a2a;border-radius:7px">
+            <div style="font-size:10px;color:#a78bfa;font-weight:600;margin-bottom:4px">🔥 Burst Cycle Remaining</div>
+            ${available.length ? `<div style="margin-bottom:3px">${availHtml}</div>` : ''}
+            ${drained.length ? `<div style="font-size:9px;color:#555;margin-bottom:2px">Drained (0 left this cycle):</div><div>${drainedHtml}</div>` : ''}
+            ${drained.length > 0 ? `<div style="font-size:9px;color:#f97316;margin-top:4px">⚠ These models won't generate until cycle resets</div>` : ''}
+          </div>`;
+        })()}
+
         ${a.planStatus==='unpaid'?`<div style="margin-top:8px;padding:6px 10px;background:#f973160f;border:1px solid #f97316;border-radius:6px;font-size:11px;color:#f97316">⚠️ Payment failed — nothing works on this account. Consider removing it.</div>`:''}
         ${(()=>{
           // Last used display
